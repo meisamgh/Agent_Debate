@@ -17,6 +17,8 @@ def test_rounds_defaults_to_three() -> None:
 
     assert args.rounds == 3
     assert args.research is False
+    assert args.research_provider == "searxng"
+    assert args.searxng_url is None
     assert args.research_queries == 4
     assert args.research_results == 3
 
@@ -84,6 +86,10 @@ def test_research_and_readme_only_flags_are_available() -> None:
             "Question",
             "--readme-only",
             "--research",
+            "--research-provider",
+            "searxng",
+            "--searxng-url",
+            "http://127.0.0.1:8888",
             "--research-queries",
             "5",
             "--research-results",
@@ -93,8 +99,28 @@ def test_research_and_readme_only_flags_are_available() -> None:
 
     assert args.readme_only is True
     assert args.research is True
+    assert args.research_provider == "searxng"
+    assert args.searxng_url == "http://127.0.0.1:8888"
     assert args.research_queries == 5
     assert args.research_results == 4
+
+
+def test_tavily_remains_an_optional_provider() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "review",
+            "--repo",
+            ".",
+            "--question",
+            "Question",
+            "--research",
+            "--research-provider",
+            "tavily",
+        ]
+    )
+
+    assert args.research_provider == "tavily"
 
 
 def test_readme_only_and_diff_base_are_mutually_exclusive() -> None:
