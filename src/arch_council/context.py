@@ -62,6 +62,9 @@ SPECIAL_TEXT_NAMES = {
 
 PRIORITY_NAMES = {
     "README.md": 0,
+    "README": 0,
+    "README.rst": 0,
+    "README.txt": 0,
     "pyproject.toml": 1,
     "requirements.txt": 2,
     "package.json": 3,
@@ -87,6 +90,8 @@ ARCHITECTURE_HINTS = (
     "worker",
     "api",
 )
+
+README_NAMES = ("README.md", "README", "README.rst", "README.txt")
 
 
 @dataclass(frozen=True)
@@ -134,15 +139,65 @@ def _safe_read(path: Path, max_file_chars: int = 30_000) -> str | None:
     return raw
 
 
+def _resolve_root(repo_path: str | Path) -> Path:
+    root = Path(repo_path).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"Repository path does not exist or is not a directory: {root}")
+    return root
+
+
+def build_readme_context(
+    repo_path: str | Path,
+    *,
+    max_chars: int = 120_000,
+) -> RepositoryContext:
+    """Build context from only the repository's root README file.
+
+    This is intentionally strict: it does not search subdirectories or append the
+    repository tree. It is useful when the council should reason from the project's
+    stated architecture rather than inspect implementation details.
+    """
+    root = _resolve_root(repo_path)
+    if max_chars < 1_000:
+        raise ValueError("max_chars must be at least 1000")
+
+    readme: Path | None = None
+    for name in README_NAMES:
+        candidate = root / name
+        if candidate.is_file():
+            readme = candidate
+            break
+
+    if readme is None:
+        expected = ", ".join(README_NAMES)
+        raise ValueError(f"--readme-only could not find a root README ({expected}) in: {root}")
+
+    try:
+        content = readme.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError) as exc:
+        raise ValueError(f"Could not read {readme.name}: {exc}") from exc
+
+    truncated = len(content) > max_chars
+    if truncated:
+        content = content[:max_chars] + "\n... [README truncated] ...\n"
+
+    text = f"# README-only repository evidence\n\n--- FILE: {readme.name} ---\n{content}\n--- END FILE ---\n"
+    return RepositoryContext(
+        root=root,
+        text=text,
+        included_files=(readme.name,),
+        truncated=truncated,
+        mode="readme-only",
+    )
+
+
 def build_repository_context(
     repo_path: str | Path,
     *,
     max_chars: int = 120_000,
     max_file_chars: int = 30_000,
 ) -> RepositoryContext:
-    root = Path(repo_path).expanduser().resolve()
-    if not root.is_dir():
-        raise ValueError(f"Repository path does not exist or is not a directory: {root}")
+    root = _resolve_root(repo_path)
     if max_chars < 1_000:
         raise ValueError("max_chars must be at least 1000")
 
@@ -192,7 +247,7 @@ def build_diff_context(
     *,
     max_chars: int = 120_000,
 ) -> RepositoryContext:
-    root = Path(repo_path).expanduser().resolve()
+    root = _resolve_root(repo_path)
     if not (root / ".git").exists():
         raise ValueError(f"--diff-base requires a Git repository: {root}")
     if max_chars < 1_000:
