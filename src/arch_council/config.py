@@ -13,6 +13,7 @@ class Settings:
     model_a: str = "gpt-5.6-sol"
     model_b: str = "gpt-5.6-terra"
     model_c: str = "gpt-5.6-luna"
+    searxng_url: str = "http://localhost:8080"
     tavily_api_key: str | None = None
     timeout_seconds: int = 180
 
@@ -31,6 +32,7 @@ class Settings:
             model_a=os.getenv("ARCHITECT_A_MODEL", "gpt-5.6-sol"),
             model_b=os.getenv("ARCHITECT_B_MODEL", "gpt-5.6-terra"),
             model_c=os.getenv("ARCHITECT_C_MODEL", "gpt-5.6-luna"),
+            searxng_url=os.getenv("SEARXNG_URL", "http://localhost:8080").rstrip("/"),
             tavily_api_key=tavily_api_key,
             timeout_seconds=int(os.getenv("ARCH_COUNCIL_TIMEOUT_SECONDS", "180")),
         )
