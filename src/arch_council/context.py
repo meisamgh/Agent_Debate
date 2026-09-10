@@ -21,13 +21,14 @@ IGNORED_DIRS = {
 }
 
 IGNORED_FILES = {
-    ".env",
-    ".env.local",
-    ".env.production",
     "package-lock.json",
     "pnpm-lock.yaml",
     "yarn.lock",
+    "credentials.json",
+    "service-account.json",
 }
+
+SECRET_SUFFIXES = {".pem", ".key", ".p12", ".pfx"}
 
 TEXT_SUFFIXES = {
     ".py",
@@ -49,7 +50,6 @@ TEXT_SUFFIXES = {
     ".scala",
     ".kt",
     ".kts",
-    ".dockerfile",
 }
 
 SPECIAL_TEXT_NAMES = {
@@ -70,6 +70,24 @@ PRIORITY_NAMES = {
     "Dockerfile": 5,
 }
 
+ARCHITECTURE_HINTS = (
+    "main",
+    "app",
+    "config",
+    "settings",
+    "service",
+    "router",
+    "pipeline",
+    "agent",
+    "retriev",
+    "model",
+    "schema",
+    "database",
+    "storage",
+    "worker",
+    "api",
+)
+
 
 @dataclass(frozen=True)
 class RepositoryContext:
@@ -81,7 +99,10 @@ class RepositoryContext:
 
 
 def _is_allowed(path: Path) -> bool:
-    if path.name in IGNORED_FILES:
+    lower_name = path.name.lower()
+    if lower_name.startswith(".env"):
+        return False
+    if path.name in IGNORED_FILES or path.suffix.lower() in SECRET_SUFFIXES:
         return False
     if any(part in IGNORED_DIRS for part in path.parts):
         return False
@@ -90,11 +111,14 @@ def _is_allowed(path: Path) -> bool:
     return path.suffix.lower() in TEXT_SUFFIXES
 
 
-def _priority(path: Path) -> tuple[int, int, str]:
+def _priority(path: Path) -> tuple[int, int, int, str]:
+    lower = path.as_posix().lower()
+    architecture_score = 0 if any(hint in lower for hint in ARCHITECTURE_HINTS) else 1
     return (
         PRIORITY_NAMES.get(path.name, 20),
+        architecture_score,
         len(path.parts),
-        path.as_posix().lower(),
+        lower,
     )
 
 
@@ -119,6 +143,8 @@ def build_repository_context(
     root = Path(repo_path).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"Repository path does not exist or is not a directory: {root}")
+    if max_chars < 1_000:
+        raise ValueError("max_chars must be at least 1000")
 
     candidates = sorted(
         (p for p in root.rglob("*") if p.is_file() and _is_allowed(p.relative_to(root))),
@@ -126,11 +152,17 @@ def build_repository_context(
     )
 
     tree_lines = [p.relative_to(root).as_posix() for p in candidates]
-    prefix = "# Repository tree\n" + "\n".join(tree_lines) + "\n\n# File contents\n"
+    tree_budget = min(max_chars // 4, 30_000)
+    tree = "\n".join(tree_lines)
+    tree_truncated = len(tree) > tree_budget
+    if tree_truncated:
+        tree = tree[:tree_budget] + "\n... [tree truncated] ..."
+
+    prefix = "# Repository tree\n" + tree + "\n\n# File contents\n"
     remaining = max_chars - len(prefix)
     chunks: list[str] = [prefix]
     included: list[str] = []
-    truncated = False
+    truncated = tree_truncated
 
     for path in candidates:
         relative = path.relative_to(root).as_posix()
@@ -163,6 +195,8 @@ def build_diff_context(
     root = Path(repo_path).expanduser().resolve()
     if not (root / ".git").exists():
         raise ValueError(f"--diff-base requires a Git repository: {root}")
+    if max_chars < 1_000:
+        raise ValueError("max_chars must be at least 1000")
 
     command = ["git", "-C", str(root), "diff", "--no-ext-diff", f"{base}...HEAD"]
     result = subprocess.run(command, capture_output=True, text=True, check=False)
