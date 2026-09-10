@@ -19,7 +19,7 @@ from .prompts import (
     revision_prompt,
     synthesis_prompt,
 )
-from .research import ResearchPack, TavilyResearchClient, parse_research_queries
+from .research import ResearchClient, ResearchPack, parse_research_queries
 
 
 @dataclass(frozen=True)
@@ -139,7 +139,7 @@ class ArchitectureDebate:
         model_b: str,
         model_c: str,
         rounds: int = 3,
-        research_client: TavilyResearchClient | None = None,
+        research_client: ResearchClient | None = None,
         research_query_count: int = 4,
         research_results_per_query: int = 3,
     ) -> None:
