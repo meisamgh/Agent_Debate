@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .client import AnthropicGatewayClient, LLMError
 from .config import Settings
-from .context import build_diff_context, build_repository_context
+from .context import build_diff_context, build_readme_context, build_repository_context
 from .debate import ArchitectureDebate, write_report
 
 
@@ -31,12 +31,21 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="1-5",
         help="Number of three-way debate rounds after blind proposals (default: 3)",
     )
-    review.add_argument("--diff-base", help="Use git diff BASE...HEAD instead of broad repo context")
+    context_group = review.add_mutually_exclusive_group()
+    context_group.add_argument(
+        "--diff-base",
+        help="Use git diff BASE...HEAD instead of broad repo context",
+    )
+    context_group.add_argument(
+        "--readme-only",
+        action="store_true",
+        help="Share only the root README with the council; no source files or repo tree",
+    )
     review.add_argument(
         "--max-context-chars",
         type=int,
         default=120_000,
-        help="Maximum repository/diff characters sent to each architect",
+        help="Maximum repository/diff/README characters sent to each architect",
     )
     review.add_argument(
         "--output-dir",
@@ -52,7 +61,12 @@ def _run_review(args: argparse.Namespace) -> int:
     model_b = args.model_b or settings.model_b
     model_c = args.model_c or settings.model_c
 
-    if args.diff_base:
+    if args.readme_only:
+        context = build_readme_context(
+            args.repo,
+            max_chars=args.max_context_chars,
+        )
+    elif args.diff_base:
         context = build_diff_context(
             args.repo,
             args.diff_base,
