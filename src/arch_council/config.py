@@ -12,6 +12,7 @@ class Settings:
     base_url: str = "https://api.justwoker.icu"
     model_a: str = "gpt-5.6-sol"
     model_b: str = "gpt-5.6-terra"
+    model_c: str = "gpt-5.6-luna"
     timeout_seconds: int = 180
 
     @classmethod
@@ -27,5 +28,6 @@ class Settings:
             base_url=os.getenv("ARCH_COUNCIL_BASE_URL", "https://api.justwoker.icu").rstrip("/"),
             model_a=os.getenv("ARCHITECT_A_MODEL", "gpt-5.6-sol"),
             model_b=os.getenv("ARCHITECT_B_MODEL", "gpt-5.6-terra"),
+            model_c=os.getenv("ARCHITECT_C_MODEL", "gpt-5.6-luna"),
             timeout_seconds=int(os.getenv("ARCH_COUNCIL_TIMEOUT_SECONDS", "180")),
         )
