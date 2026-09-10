@@ -4,6 +4,7 @@ import pytest
 
 from arch_council.context import RepositoryContext
 from arch_council.debate import ArchitectureDebate
+from arch_council.research import ResearchPack, ResearchSource
 
 
 class FakeClient:
@@ -12,7 +13,26 @@ class FakeClient:
 
     def complete(self, **kwargs: object) -> str:
         self.calls.append(kwargs)
+        if len(self.calls) == 4 and "evidence planner" in str(kwargs.get("system", "")):
+            return "agent recovery checkpointing\narchitecture evidence durable workflows"
         return f"response-{len(self.calls)}"
+
+
+class FakeResearchClient:
+    def search_many(self, queries: list[str], **_: object) -> ResearchPack:
+        return ResearchPack(
+            queries=tuple(queries),
+            sources=(
+                ResearchSource(
+                    source_id="S1",
+                    query=queries[0],
+                    title="Evidence",
+                    url="https://example.com/evidence",
+                    content="Durable checkpoints support recovery.",
+                    score=0.9,
+                ),
+            ),
+        )
 
 
 def make_context(tmp_path: Path, text: str = "# repo context") -> RepositoryContext:
@@ -138,9 +158,6 @@ def test_each_new_round_uses_previous_round_state_symmetrically(tmp_path: Path) 
 
     debate.run(question="Question", context=context)
 
-    # Calls 4, 5, 6 are round 1 and produce response-4/5/6.
-    # Calls 7, 8, 9 are round 2. Each model sees all previous-round states,
-    # but never another model's same-round response.
     round_two_a = str(client.calls[6]["user"])
     round_two_b = str(client.calls[7]["user"])
     round_two_c = str(client.calls[8]["user"])
@@ -154,11 +171,34 @@ def test_each_new_round_uses_previous_round_state_symmetrically(tmp_path: Path) 
     assert "response-7" not in round_two_c
     assert "response-8" not in round_two_c
 
-    # Full repository evidence is sent in round 1, but later rounds carry only compact
-    # debate state to control token growth.
     assert "UNIQUE_FULL_REPO_EVIDENCE" in str(client.calls[3]["user"])
     assert "UNIQUE_FULL_REPO_EVIDENCE" in str(client.calls[4]["user"])
     assert "UNIQUE_FULL_REPO_EVIDENCE" in str(client.calls[5]["user"])
     assert "UNIQUE_FULL_REPO_EVIDENCE" not in round_two_a
     assert "UNIQUE_FULL_REPO_EVIDENCE" not in round_two_b
     assert "UNIQUE_FULL_REPO_EVIDENCE" not in round_two_c
+
+
+def test_research_runs_after_blind_proposals_and_is_injected(tmp_path: Path) -> None:
+    client = FakeClient()
+    debate = ArchitectureDebate(
+        client,
+        model_a="model-a",
+        model_b="model-b",
+        model_c="model-c",
+        rounds=1,
+        research_client=FakeResearchClient(),  # type: ignore[arg-type]
+        research_query_count=2,
+    )
+
+    result = debate.run(question="Question", context=make_context(tmp_path))
+
+    assert len(client.calls) == 11
+    assert "Blind proposal A" in str(client.calls[3]["user"])
+    assert "https://example.com/evidence" in str(client.calls[4]["user"])
+    assert "[S1]" in str(client.calls[4]["user"])
+    assert result.research_queries == (
+        "agent recovery checkpointing",
+        "architecture evidence durable workflows",
+    )
+    assert result.research_evidence is not None
