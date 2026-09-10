@@ -8,6 +8,7 @@ from .client import AnthropicGatewayClient, LLMError
 from .config import Settings
 from .context import build_diff_context, build_readme_context, build_repository_context
 from .debate import ArchitectureDebate, write_report
+from .research import ResearchError, TavilyResearchClient
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -42,6 +43,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Share only the root README with the council; no source files or repo tree",
     )
     review.add_argument(
+        "--research",
+        action="store_true",
+        help="Search external web sources after blind proposals and ground the debate in evidence",
+    )
+    review.add_argument(
+        "--research-queries",
+        type=int,
+        choices=range(1, 7),
+        default=4,
+        metavar="1-6",
+        help="Number of research queries planned when --research is enabled (default: 4)",
+    )
+    review.add_argument(
+        "--research-results",
+        type=int,
+        choices=range(1, 6),
+        default=3,
+        metavar="1-5",
+        help="Maximum search results per research query (default: 3)",
+    )
+    review.add_argument(
         "--max-context-chars",
         type=int,
         default=120_000,
@@ -62,23 +84,21 @@ def _run_review(args: argparse.Namespace) -> int:
     model_c = args.model_c or settings.model_c
 
     if args.readme_only:
-        context = build_readme_context(
-            args.repo,
-            max_chars=args.max_context_chars,
-        )
+        context = build_readme_context(args.repo, max_chars=args.max_context_chars)
     elif args.diff_base:
-        context = build_diff_context(
-            args.repo,
-            args.diff_base,
-            max_chars=args.max_context_chars,
-        )
+        context = build_diff_context(args.repo, args.diff_base, max_chars=args.max_context_chars)
     else:
-        context = build_repository_context(
-            args.repo,
-            max_chars=args.max_context_chars,
-        )
+        context = build_repository_context(args.repo, max_chars=args.max_context_chars)
 
-    total_calls = 7 + (3 * args.rounds)
+    research_client = None
+    if args.research:
+        if not settings.tavily_api_key:
+            raise RuntimeError(
+                "--research requires TAVILY_API_KEY. Add it to .env or run without --research."
+            )
+        research_client = TavilyResearchClient(settings.tavily_api_key)
+
+    total_llm_calls = 7 + (3 * args.rounds) + (1 if args.research else 0)
     print(f"Repository: {context.root}")
     print(f"Context mode: {context.mode}")
     print(f"Included files: {len(context.included_files)}")
@@ -88,8 +108,17 @@ def _run_review(args: argparse.Namespace) -> int:
     print(f"Architect B: {model_b} (Scaling Challenger)")
     print(f"Architect C: {model_c} (Alternative/Mutation Architect)")
     print(f"Debate rounds: {args.rounds}")
-    print(f"Planned LLM calls: {total_calls}")
-    print("Flow: 3 blind proposals → three-way debate → 3 final revisions → ADR")
+    print(f"External research: {'enabled' if args.research else 'disabled'}")
+    if args.research:
+        print(
+            f"Research plan: {args.research_queries} queries × up to "
+            f"{args.research_results} results/query"
+        )
+    print(f"Planned LLM calls: {total_llm_calls}")
+    print(
+        "Flow: 3 blind proposals → optional external research → "
+        "three-way debate → 3 final revisions → ADR"
+    )
 
     client = AnthropicGatewayClient(
         api_key=settings.api_key,
@@ -102,12 +131,15 @@ def _run_review(args: argparse.Namespace) -> int:
         model_b=model_b,
         model_c=model_c,
         rounds=args.rounds,
+        research_client=research_client,
+        research_query_count=args.research_queries,
+        research_results_per_query=args.research_results,
     )
 
     try:
         result = debate.run(question=args.question, context=context)
-    except LLMError as exc:
-        print(f"LLM gateway error: {exc}", file=sys.stderr)
+    except (LLMError, ResearchError) as exc:
+        print(f"Review error: {exc}", file=sys.stderr)
         return 2
 
     report = write_report(result, context, Path(args.output_dir))
