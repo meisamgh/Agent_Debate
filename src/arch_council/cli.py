@@ -13,7 +13,7 @@ from .debate import ArchitectureDebate, write_report
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="arch-council",
-        description="Run a bounded two-model architecture review over a local repository.",
+        description="Run a bounded three-model architecture review over a local repository.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -22,13 +22,14 @@ def _build_parser() -> argparse.ArgumentParser:
     review.add_argument("--question", required=True, help="Architecture question to debate")
     review.add_argument("--model-a", help="Override Architect A model")
     review.add_argument("--model-b", help="Override Architect B model")
+    review.add_argument("--model-c", help="Override Architect C model")
     review.add_argument(
         "--rounds",
         type=int,
         choices=range(1, 6),
         default=3,
         metavar="1-5",
-        help="Number of A/B debate rounds after blind proposals (default: 3)",
+        help="Number of three-way debate rounds after blind proposals (default: 3)",
     )
     review.add_argument("--diff-base", help="Use git diff BASE...HEAD instead of broad repo context")
     review.add_argument(
@@ -49,6 +50,7 @@ def _run_review(args: argparse.Namespace) -> int:
     settings = Settings.from_env()
     model_a = args.model_a or settings.model_a
     model_b = args.model_b or settings.model_b
+    model_c = args.model_c or settings.model_c
 
     if args.diff_base:
         context = build_diff_context(
@@ -62,17 +64,18 @@ def _run_review(args: argparse.Namespace) -> int:
             max_chars=args.max_context_chars,
         )
 
-    total_calls = 5 + (2 * args.rounds)
+    total_calls = 7 + (3 * args.rounds)
     print(f"Repository: {context.root}")
     print(f"Context mode: {context.mode}")
     print(f"Included files: {len(context.included_files)}")
     if context.truncated:
         print("Warning: context was truncated to the configured limit.")
-    print(f"Architect A: {model_a}")
-    print(f"Architect B: {model_b}")
+    print(f"Architect A: {model_a} (Production Pragmatist)")
+    print(f"Architect B: {model_b} (Scaling Challenger)")
+    print(f"Architect C: {model_c} (Alternative/Mutation Architect)")
     print(f"Debate rounds: {args.rounds}")
     print(f"Planned LLM calls: {total_calls}")
-    print("Flow: blind proposals → repeated debate → final revisions → ADR")
+    print("Flow: 3 blind proposals → three-way debate → 3 final revisions → ADR")
 
     client = AnthropicGatewayClient(
         api_key=settings.api_key,
@@ -83,6 +86,7 @@ def _run_review(args: argparse.Namespace) -> int:
         client,
         model_a=model_a,
         model_b=model_b,
+        model_c=model_c,
         rounds=args.rounds,
     )
 
