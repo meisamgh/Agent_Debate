@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 import requests
 
@@ -41,57 +42,24 @@ Evidence: {source.content}"""
         return "\n\n".join(blocks)
 
 
-class TavilyResearchClient:
-    """Small Tavily Search API client using requests only.
+class ResearchClient(Protocol):
+    """Provider-neutral interface consumed by the architecture debate."""
 
-    Tavily is deliberately isolated from the LLM gateway. Search results are treated as
-    untrusted external evidence: the council must cite source IDs and may reject findings.
-    """
+    def search_many(
+        self,
+        queries: list[str] | tuple[str, ...],
+        *,
+        max_results_per_query: int = 3,
+        max_sources: int = 12,
+        max_content_chars: int = 1_200,
+    ) -> ResearchPack: ...
 
-    def __init__(self, api_key: str, timeout_seconds: int = 60) -> None:
-        api_key = api_key.strip()
-        if not api_key:
-            raise ResearchError(
-                "TAVILY_API_KEY is missing. Add it to .env or run without --research."
-            )
-        self.api_key = api_key
-        self.timeout_seconds = timeout_seconds
+
+class _BaseSearchClient:
+    """Shared result packing for search providers."""
 
     def search(self, query: str, *, max_results: int = 3) -> list[dict[str, object]]:
-        try:
-            response = requests.post(
-                "https://api.tavily.com/search",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "query": query,
-                    "search_depth": "basic",
-                    "max_results": max_results,
-                    "include_answer": False,
-                    "include_raw_content": False,
-                },
-                timeout=self.timeout_seconds,
-            )
-        except requests.RequestException as exc:
-            raise ResearchError(f"External research request failed: {exc}") from exc
-
-        if response.status_code != 200:
-            preview = response.text[:500].replace("\n", " ")
-            raise ResearchError(
-                f"Tavily search returned HTTP {response.status_code}: {preview}"
-            )
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise ResearchError("Tavily returned a non-JSON response") from exc
-
-        results = payload.get("results", [])
-        if not isinstance(results, list):
-            raise ResearchError("Tavily response did not contain a results list")
-        return [item for item in results if isinstance(item, dict)]
+        raise NotImplementedError
 
     def search_many(
         self,
@@ -132,6 +100,125 @@ class TavilyResearchClient:
                     return ResearchPack(queries=unique_queries, sources=tuple(sources))
 
         return ResearchPack(queries=unique_queries, sources=tuple(sources))
+
+
+class SearXNGResearchClient(_BaseSearchClient):
+    """Research client for a SearXNG instance using its JSON search API.
+
+    No search-provider API key is required. The target SearXNG instance must allow
+    JSON output (`search.formats` includes `json`). A local self-hosted instance is
+    recommended because many public instances disable machine-readable output.
+    """
+
+    def __init__(self, base_url: str = "http://localhost:8080", timeout_seconds: int = 60) -> None:
+        base_url = base_url.strip().rstrip("/")
+        if not base_url.startswith(("http://", "https://")):
+            raise ResearchError("SEARXNG_URL must start with http:// or https://")
+        self.base_url = base_url
+        self.timeout_seconds = timeout_seconds
+
+    def search(self, query: str, *, max_results: int = 3) -> list[dict[str, object]]:
+        try:
+            response = requests.get(
+                f"{self.base_url}/search",
+                params={
+                    "q": query,
+                    "format": "json",
+                    "categories": "general",
+                    "language": "all",
+                    "safesearch": 1,
+                },
+                headers={"Accept": "application/json"},
+                timeout=self.timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            raise ResearchError(
+                f"SearXNG request failed for {self.base_url}: {exc}. "
+                "Make sure the SearXNG service is running."
+            ) from exc
+
+        if response.status_code != 200:
+            preview = response.text[:500].replace("\n", " ")
+            hint = ""
+            if response.status_code == 403:
+                hint = " Ensure `json` is enabled under `search.formats` in SearXNG settings.yml."
+            raise ResearchError(
+                f"SearXNG search returned HTTP {response.status_code}: {preview}.{hint}"
+            )
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ResearchError(
+                "SearXNG returned non-JSON content. Ensure the instance supports format=json."
+            ) from exc
+
+        results = payload.get("results", [])
+        if not isinstance(results, list):
+            raise ResearchError("SearXNG response did not contain a results list")
+
+        normalized: list[dict[str, object]] = []
+        for item in results[:max_results]:
+            if not isinstance(item, dict):
+                continue
+            normalized.append(
+                {
+                    "title": item.get("title", ""),
+                    "url": item.get("url", ""),
+                    "content": item.get("content", ""),
+                    "score": item.get("score"),
+                }
+            )
+        return normalized
+
+
+class TavilyResearchClient(_BaseSearchClient):
+    """Optional Tavily Search API client using requests only."""
+
+    def __init__(self, api_key: str, timeout_seconds: int = 60) -> None:
+        api_key = api_key.strip()
+        if not api_key:
+            raise ResearchError(
+                "TAVILY_API_KEY is missing. Add it to .env or choose --research-provider searxng."
+            )
+        self.api_key = api_key
+        self.timeout_seconds = timeout_seconds
+
+    def search(self, query: str, *, max_results: int = 3) -> list[dict[str, object]]:
+        try:
+            response = requests.post(
+                "https://api.tavily.com/search",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "query": query,
+                    "search_depth": "basic",
+                    "max_results": max_results,
+                    "include_answer": False,
+                    "include_raw_content": False,
+                },
+                timeout=self.timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            raise ResearchError(f"External research request failed: {exc}") from exc
+
+        if response.status_code != 200:
+            preview = response.text[:500].replace("\n", " ")
+            raise ResearchError(
+                f"Tavily search returned HTTP {response.status_code}: {preview}"
+            )
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ResearchError("Tavily returned a non-JSON response") from exc
+
+        results = payload.get("results", [])
+        if not isinstance(results, list):
+            raise ResearchError("Tavily response did not contain a results list")
+        return [item for item in results if isinstance(item, dict)]
 
 
 def parse_research_queries(text: str, *, max_queries: int = 4) -> list[str]:
