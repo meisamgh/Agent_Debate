@@ -22,6 +22,7 @@ Do not assume requirements that were not supplied; label assumptions clearly.
 CRITIC_SYSTEM = """You are participating in an adversarial architecture review.
 Your goal is not to be agreeable. Try to falsify the other architecture using repository evidence, concrete execution paths, operational constraints, and measurable trade-offs.
 Separate real risks from preferences. Do not invent missing facts.
+Your response becomes your complete debate state for the next round: explicitly carry forward concessions, rebuttals, unresolved disagreements, and proposed ways to resolve them.
 """
 
 
@@ -57,37 +58,61 @@ Be specific and reference repository files when evidence exists.
 """
 
 
-def critique_prompt(question: str, own_proposal: str, other_proposal: str, context: str) -> str:
+def debate_round_prompt(
+    question: str,
+    round_number: int,
+    own_position: str,
+    opponent_position: str,
+    context: str | None = None,
+) -> str:
+    evidence = ""
+    if context:
+        evidence = f"""
+Repository evidence:
+{context}
+"""
+
     return f"""Architecture question:
 {question}
 
-Repository evidence:
-{context}
+Debate round: {round_number}
+{evidence}
+Your current position / previous-round state:
+{own_position}
 
-Your original proposal:
-{own_proposal}
+Opponent's current position / previous-round state:
+{opponent_position}
 
-Other architect's proposal:
-{other_proposal}
+Continue the architecture debate. Do not merely restate earlier arguments.
+Return exactly these sections:
 
-Challenge the other proposal. Return:
-1. Three strongest decisions in the other proposal
-2. Three most dangerous assumptions
-3. Claims contradicted or unsupported by repository evidence
-4. Complexity that is not justified
-5. Important risks they missed
-6. Concrete scenarios where their architecture fails
-7. What would change your mind
+## STRONGEST OPPONENT POINTS
+Identify the opponent's strongest technically valid points.
 
-Do not criticize merely to create disagreement.
+## CONCESSIONS
+State what you now accept and how it changes your architecture. Write NONE if nothing changes.
+
+## REBUTTALS
+Challenge claims that remain weak, unsupported, over-engineered, or unsafe. Use concrete scenarios.
+
+## UNRESOLVED DISAGREEMENTS
+Carry forward only disagreements that still matter. Rank each HIGH, MEDIUM, or LOW impact.
+
+## PROPOSED RESOLUTION
+For each important unresolved disagreement, give a concrete benchmark, test, constraint, or evidence that would resolve it.
+
+## CURRENT ARCHITECTURE POSITION
+Give the complete current version of your position in compact form so the next round can continue from this response alone.
+
+Do not create disagreement for its own sake. Concede when the opponent has stronger evidence.
 """
 
 
 def revision_prompt(
     question: str,
     original: str,
-    own_critique: str,
-    critique_received: str,
+    latest_own_position: str,
+    latest_opponent_position: str,
     context: str,
 ) -> str:
     return f"""Architecture question:
@@ -99,20 +124,20 @@ Repository evidence:
 Your original proposal:
 {original}
 
-Your critique of the other architecture:
-{own_critique}
+Your final debate-round position:
+{latest_own_position}
 
-Critique you received:
-{critique_received}
+Opponent's final debate-round position:
+{latest_opponent_position}
 
-Revise your architecture once. Explicitly state:
+Produce your final revised architecture. Explicitly state:
 - ACCEPTED CHANGES: criticisms you accept and what you changed
 - REJECTED CRITICISMS: criticisms you reject and evidence/reason
 - REVISED ARCHITECTURE
 - REMAINING RISKS
 - NEEDS EXPERIMENT items
 
-Do not silently change your position.
+Resolve what can be resolved, but do not manufacture agreement. Do not silently change your position.
 """
 
 
@@ -120,8 +145,7 @@ def synthesis_prompt(
     question: str,
     proposal_a: str,
     proposal_b: str,
-    critique_a: str,
-    critique_b: str,
+    debate_transcript: str,
     revision_a: str,
     revision_b: str,
 ) -> str:
@@ -134,16 +158,13 @@ Initial proposal A:
 Initial proposal B:
 {proposal_b}
 
-A's critique of B:
-{critique_a}
+Debate transcript:
+{debate_transcript}
 
-B's critique of A:
-{critique_b}
-
-Revised proposal A:
+Final revised proposal A:
 {revision_a}
 
-Revised proposal B:
+Final revised proposal B:
 {revision_b}
 
 Write the final Architecture Decision Record with exactly these top-level sections:
