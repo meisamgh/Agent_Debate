@@ -51,3 +51,20 @@ def test_rounds_rejects_values_outside_range() -> None:
                 "6",
             ]
         )
+
+
+def test_model_c_override_is_available() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "review",
+            "--repo",
+            ".",
+            "--question",
+            "Question",
+            "--model-c",
+            "custom-model-c",
+        ]
+    )
+
+    assert args.model_c == "custom-model-c"
