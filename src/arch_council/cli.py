@@ -8,7 +8,7 @@ from .client import AnthropicGatewayClient, LLMError
 from .config import Settings
 from .context import build_diff_context, build_readme_context, build_repository_context
 from .debate import ArchitectureDebate, write_report
-from .research import ResearchError, TavilyResearchClient
+from .research import ResearchError, SearXNGResearchClient, TavilyResearchClient
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -45,7 +45,17 @@ def _build_parser() -> argparse.ArgumentParser:
     review.add_argument(
         "--research",
         action="store_true",
-        help="Search external web sources after blind proposals and ground the debate in evidence",
+        help="Search external sources after blind proposals and ground the debate in evidence",
+    )
+    review.add_argument(
+        "--research-provider",
+        choices=("searxng", "tavily"),
+        default="searxng",
+        help="External search provider used with --research (default: searxng)",
+    )
+    review.add_argument(
+        "--searxng-url",
+        help="SearXNG base URL; defaults to SEARXNG_URL or http://localhost:8080",
     )
     review.add_argument(
         "--research-queries",
@@ -91,12 +101,20 @@ def _run_review(args: argparse.Namespace) -> int:
         context = build_repository_context(args.repo, max_chars=args.max_context_chars)
 
     research_client = None
+    research_label = "disabled"
     if args.research:
-        if not settings.tavily_api_key:
-            raise RuntimeError(
-                "--research requires TAVILY_API_KEY. Add it to .env or run without --research."
-            )
-        research_client = TavilyResearchClient(settings.tavily_api_key)
+        if args.research_provider == "searxng":
+            searxng_url = args.searxng_url or settings.searxng_url
+            research_client = SearXNGResearchClient(searxng_url)
+            research_label = f"searxng ({searxng_url})"
+        else:
+            if not settings.tavily_api_key:
+                raise RuntimeError(
+                    "--research-provider tavily requires TAVILY_API_KEY. "
+                    "Use the default SearXNG provider for keyless local research."
+                )
+            research_client = TavilyResearchClient(settings.tavily_api_key)
+            research_label = "tavily"
 
     total_llm_calls = 7 + (3 * args.rounds) + (1 if args.research else 0)
     print(f"Repository: {context.root}")
@@ -108,7 +126,7 @@ def _run_review(args: argparse.Namespace) -> int:
     print(f"Architect B: {model_b} (Scaling Challenger)")
     print(f"Architect C: {model_c} (Alternative/Mutation Architect)")
     print(f"Debate rounds: {args.rounds}")
-    print(f"External research: {'enabled' if args.research else 'disabled'}")
+    print(f"External research: {research_label}")
     if args.research:
         print(
             f"Research plan: {args.research_queries} queries × up to "
