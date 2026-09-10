@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .client import AnthropicGatewayClient
@@ -49,7 +49,7 @@ class DebateResult:
     research_evidence: str | None = None
 
     def to_markdown(self, context: RepositoryContext) -> str:
-        created = datetime.now(timezone.utc).isoformat()
+        created = datetime.now(UTC).isoformat()
         files = "\n".join(f"- `{path}`" for path in context.included_files) or "- none"
         rounds = "\n\n".join(
             f"""## Debate Round {round_.number}
@@ -382,7 +382,7 @@ class ArchitectureDebate:
 
 def write_report(result: DebateResult, context: RepositoryContext, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     path = output_dir / f"architecture-review-{stamp}.md"
     path.write_text(result.to_markdown(context), encoding="utf-8")
     return path
