@@ -11,12 +11,15 @@ from .prompts import (
     ARCHITECT_B_SYSTEM,
     ARCHITECT_C_SYSTEM,
     CRITIC_SYSTEM,
+    RESEARCH_PLANNER_SYSTEM,
     SYNTHESIS_SYSTEM,
     debate_round_prompt,
     proposal_prompt,
+    research_query_prompt,
     revision_prompt,
     synthesis_prompt,
 )
+from .research import ResearchPack, TavilyResearchClient, parse_research_queries
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,8 @@ class DebateResult:
     revision_b: str
     revision_c: str
     decision: str
+    research_queries: tuple[str, ...] = ()
+    research_evidence: str | None = None
 
     def to_markdown(self, context: RepositoryContext) -> str:
         created = datetime.now(timezone.utc).isoformat()
@@ -62,6 +67,18 @@ class DebateResult:
 {round_.response_c}"""
             for round_ in self.debate_rounds
         )
+        research = ""
+        if self.research_evidence:
+            queries = "\n".join(f"- {query}" for query in self.research_queries)
+            research = f"""
+## External Research Queries
+
+{queries}
+
+## External Research Evidence
+
+{self.research_evidence}
+"""
         return f"""# ArchCouncil Architecture Review
 
 - Created: {created}
@@ -72,6 +89,7 @@ class DebateResult:
 - Architect B: `{self.model_b}`
 - Architect C: `{self.model_c}`
 - Debate rounds: `{self.rounds_requested}`
+- External research: `{bool(self.research_evidence)}`
 
 ## Question
 
@@ -92,7 +110,7 @@ class DebateResult:
 ## Independent Proposal C
 
 {self.proposal_c}
-
+{research}
 {rounds}
 
 ## Final Revised Proposal A
@@ -121,17 +139,62 @@ class ArchitectureDebate:
         model_b: str,
         model_c: str,
         rounds: int = 3,
+        research_client: TavilyResearchClient | None = None,
+        research_query_count: int = 4,
+        research_results_per_query: int = 3,
     ) -> None:
         if not 1 <= rounds <= 5:
             raise ValueError("rounds must be between 1 and 5")
+        if not 1 <= research_query_count <= 6:
+            raise ValueError("research_query_count must be between 1 and 6")
+        if not 1 <= research_results_per_query <= 5:
+            raise ValueError("research_results_per_query must be between 1 and 5")
         self.client = client
         self.model_a = model_a
         self.model_b = model_b
         self.model_c = model_c
         self.rounds = rounds
+        self.research_client = research_client
+        self.research_query_count = research_query_count
+        self.research_results_per_query = research_results_per_query
+
+    def _research_after_blind_proposals(
+        self,
+        *,
+        question: str,
+        proposal_a: str,
+        proposal_b: str,
+        proposal_c: str,
+    ) -> ResearchPack | None:
+        if self.research_client is None:
+            return None
+
+        raw_queries = self.client.complete(
+            model=self.model_c,
+            system=RESEARCH_PLANNER_SYSTEM,
+            user=research_query_prompt(
+                question,
+                proposal_a,
+                proposal_b,
+                proposal_c,
+                max_queries=self.research_query_count,
+            ),
+            max_tokens=1200,
+            temperature=0.2,
+        )
+        queries = parse_research_queries(raw_queries, max_queries=self.research_query_count)
+        if not queries:
+            queries = [question]
+
+        return self.research_client.search_many(
+            queries,
+            max_results_per_query=self.research_results_per_query,
+            max_sources=min(18, self.research_query_count * self.research_results_per_query),
+        )
 
     def run(self, *, question: str, context: RepositoryContext) -> DebateResult:
-        # Blind proposals: no architect sees another model's first answer.
+        # Blind proposals: no architect sees another model's first answer or external search.
+        # This preserves genuine model diversity before shared evidence can anchor the council.
         proposal_a = self.client.complete(
             model=self.model_a,
             system=ARCHITECT_A_SYSTEM,
@@ -148,6 +211,14 @@ class ArchitectureDebate:
             user=proposal_prompt(question, context.text),
         )
 
+        research_pack = self._research_after_blind_proposals(
+            question=question,
+            proposal_a=proposal_a,
+            proposal_b=proposal_b,
+            proposal_c=proposal_c,
+        )
+        external_evidence = research_pack.to_prompt() if research_pack else None
+
         position_a = proposal_a
         position_b = proposal_b
         position_c = proposal_c
@@ -156,7 +227,7 @@ class ArchitectureDebate:
         for round_number in range(1, self.rounds + 1):
             # All three react to the same previous-round state, so no same-round response
             # can anchor another architect or create an ordering advantage.
-            evidence = context.text if round_number == 1 else None
+            repository_evidence = context.text if round_number == 1 else None
             response_a = self.client.complete(
                 model=self.model_a,
                 system=ARCHITECT_A_SYSTEM + "\n" + CRITIC_SYSTEM,
@@ -168,7 +239,8 @@ class ArchitectureDebate:
                     opponent_1_position=position_b,
                     opponent_2_label="Architect C",
                     opponent_2_position=position_c,
-                    context=evidence,
+                    context=repository_evidence,
+                    external_evidence=external_evidence,
                 ),
             )
             response_b = self.client.complete(
@@ -182,7 +254,8 @@ class ArchitectureDebate:
                     opponent_1_position=position_a,
                     opponent_2_label="Architect C",
                     opponent_2_position=position_c,
-                    context=evidence,
+                    context=repository_evidence,
+                    external_evidence=external_evidence,
                 ),
             )
             response_c = self.client.complete(
@@ -196,7 +269,8 @@ class ArchitectureDebate:
                     opponent_1_position=position_a,
                     opponent_2_label="Architect B",
                     opponent_2_position=position_b,
-                    context=evidence,
+                    context=repository_evidence,
+                    external_evidence=external_evidence,
                 ),
             )
             debate_rounds.append(
@@ -223,6 +297,7 @@ class ArchitectureDebate:
                 opponent_2_label="Architect C",
                 opponent_2_position=position_c,
                 context=context.text,
+                external_evidence=external_evidence,
             ),
         )
         revision_b = self.client.complete(
@@ -237,6 +312,7 @@ class ArchitectureDebate:
                 opponent_2_label="Architect C",
                 opponent_2_position=position_c,
                 context=context.text,
+                external_evidence=external_evidence,
             ),
         )
         revision_c = self.client.complete(
@@ -251,6 +327,7 @@ class ArchitectureDebate:
                 opponent_2_label="Architect B",
                 opponent_2_position=position_b,
                 context=context.text,
+                external_evidence=external_evidence,
             ),
         )
 
@@ -266,8 +343,6 @@ class ArchitectureDebate:
             for round_ in debate_rounds
         )
 
-        # Architect A acts as ADR editor after all three models revise. The synthesis
-        # prompt explicitly forbids simple majority voting and asks for minority reports.
         decision = self.client.complete(
             model=self.model_a,
             system=SYNTHESIS_SYSTEM,
@@ -280,6 +355,7 @@ class ArchitectureDebate:
                 revision_a,
                 revision_b,
                 revision_c,
+                external_evidence=external_evidence,
             ),
             max_tokens=8000,
             temperature=0.1,
@@ -299,6 +375,8 @@ class ArchitectureDebate:
             revision_b=revision_b,
             revision_c=revision_c,
             decision=decision,
+            research_queries=research_pack.queries if research_pack else (),
+            research_evidence=external_evidence,
         )
 
 
