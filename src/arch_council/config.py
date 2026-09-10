@@ -18,7 +18,7 @@ class Settings:
     timeout_seconds: int = 180
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         load_dotenv()
         api_key = os.getenv("JUSTWOKER_API_KEY", "").strip()
         if not api_key:
