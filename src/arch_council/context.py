@@ -4,7 +4,6 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-
 IGNORED_DIRS = {
     ".git",
     ".venv",
