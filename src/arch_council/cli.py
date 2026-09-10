@@ -22,6 +22,14 @@ def _build_parser() -> argparse.ArgumentParser:
     review.add_argument("--question", required=True, help="Architecture question to debate")
     review.add_argument("--model-a", help="Override Architect A model")
     review.add_argument("--model-b", help="Override Architect B model")
+    review.add_argument(
+        "--rounds",
+        type=int,
+        choices=range(1, 6),
+        default=3,
+        metavar="1-5",
+        help="Number of A/B debate rounds after blind proposals (default: 3)",
+    )
     review.add_argument("--diff-base", help="Use git diff BASE...HEAD instead of broad repo context")
     review.add_argument(
         "--max-context-chars",
@@ -54,6 +62,7 @@ def _run_review(args: argparse.Namespace) -> int:
             max_chars=args.max_context_chars,
         )
 
+    total_calls = 5 + (2 * args.rounds)
     print(f"Repository: {context.root}")
     print(f"Context mode: {context.mode}")
     print(f"Included files: {len(context.included_files)}")
@@ -61,14 +70,21 @@ def _run_review(args: argparse.Namespace) -> int:
         print("Warning: context was truncated to the configured limit.")
     print(f"Architect A: {model_a}")
     print(f"Architect B: {model_b}")
-    print("Running bounded review: proposal → critique → revision → ADR")
+    print(f"Debate rounds: {args.rounds}")
+    print(f"Planned LLM calls: {total_calls}")
+    print("Flow: blind proposals → repeated debate → final revisions → ADR")
 
     client = AnthropicGatewayClient(
         api_key=settings.api_key,
         base_url=settings.base_url,
         timeout_seconds=settings.timeout_seconds,
     )
-    debate = ArchitectureDebate(client, model_a=model_a, model_b=model_b)
+    debate = ArchitectureDebate(
+        client,
+        model_a=model_a,
+        model_b=model_b,
+        rounds=args.rounds,
+    )
 
     try:
         result = debate.run(question=args.question, context=context)
