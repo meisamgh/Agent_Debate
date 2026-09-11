@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -7,28 +8,78 @@ from arch_council.debate import ArchitectureDebate
 from arch_council.research import ResearchPack, ResearchSource
 
 
+SCORES = {
+    "repository_fit": 3,
+    "external_evidence_strength": 3,
+    "testability": 3,
+    "predicted_correctness_impact_unverified": 3,
+    "complexity_maintainability": 3,
+    "recovery_robustness": 3,
+    "latency_cost": 3,
+    "migration_reversibility": 3,
+}
+
+
 class FakeClient:
-    def __init__(self) -> None:
+    def __init__(self, *, high_first_round: bool = False) -> None:
         self.calls: list[dict[str, object]] = []
+        self.debate_calls = 0
+        self.high_first_round = high_first_round
 
     def complete(self, **kwargs: object) -> str:
         self.calls.append(kwargs)
-        if len(self.calls) == 4 and "evidence planner" in str(kwargs.get("system", "")):
-            return "agent recovery checkpointing\narchitecture evidence durable workflows"
+        system = str(kwargs.get("system", ""))
+        if "evidence planner" in system:
+            return "text-to-sql query IR paper\ntext-to-sql architecture github repository"
+        if "checking whether" in system:
+            return '{"gaps": []}'
+        if "adversarial architecture council" in system:
+            self.debate_calls += 1
+            first_round = self.debate_calls <= 3
+            high = self.high_first_round and first_round
+            return json.dumps(
+                {
+                    "position_markdown": f"debate-position-{self.debate_calls}",
+                    "unresolved_objections": [
+                        {
+                            "target": "shared",
+                            "category": "query_ir",
+                            "claim": "IR boundary needs proof",
+                            "impact": "high" if high else "low",
+                            "status": "unresolved" if high else "resolved",
+                            "evidence": [],
+                        }
+                    ],
+                    "concessions": [],
+                    "evidence_requests": [],
+                    "material_architecture_change": False,
+                }
+            )
+        if "impartial architecture arbiter" in system:
+            scores = {candidate: dict(SCORES) for candidate in ("A", "B", "C")}
+            scores["B"]["external_evidence_strength"] = 4
+            return json.dumps({"candidates": scores})
+        if "final ADR editor" in system:
+            return "# Executive Decision\nCandidate B wins."
         return f"response-{len(self.calls)}"
 
 
 class FakeResearchClient:
-    def search_many(self, queries: list[str], **_: object) -> ResearchPack:
+    def __init__(self) -> None:
+        self.queries: list[tuple[str, ...]] = []
+
+    def search_many(self, queries, **_: object) -> ResearchPack:
+        normalized = tuple(queries)
+        self.queries.append(normalized)
         return ResearchPack(
-            queries=tuple(queries),
+            queries=normalized,
             sources=(
                 ResearchSource(
                     source_id="S1",
-                    query=queries[0],
+                    query=normalized[0],
                     title="Evidence",
                     url="https://example.com/evidence",
-                    content="Durable checkpoints support recovery.",
+                    content="A typed intermediate representation can separate planning from SQL.",
                     score=0.9,
                 ),
             ),
@@ -45,82 +96,50 @@ def make_context(tmp_path: Path, text: str = "# repo context") -> RepositoryCont
     )
 
 
-def test_default_three_round_council_uses_sixteen_model_calls(tmp_path: Path) -> None:
+def test_dynamic_council_stops_after_first_converged_round(tmp_path: Path) -> None:
     client = FakeClient()
     debate = ArchitectureDebate(
         client,
         model_a="model-a",
         model_b="model-b",
         model_c="model-c",
+        rounds=3,
     )
 
-    result = debate.run(
-        question="Which architecture is safer?",
-        context=make_context(tmp_path),
-    )
+    result = debate.run(question="Which architecture is safer?", context=make_context(tmp_path))
 
-    assert len(client.calls) == 16
-    assert [call["model"] for call in client.calls] == [
-        "model-a",
-        "model-b",
-        "model-c",
-        "model-a",
-        "model-b",
-        "model-c",
-        "model-a",
-        "model-b",
-        "model-c",
-        "model-a",
-        "model-b",
-        "model-c",
-        "model-a",
-        "model-b",
-        "model-c",
-        "model-a",
-    ]
-    assert len(result.debate_rounds) == 3
-    assert result.proposal_a == "response-1"
-    assert result.proposal_b == "response-2"
-    assert result.proposal_c == "response-3"
-    assert result.decision == "response-16"
+    assert result.rounds_completed == 1
+    assert result.rounds_requested == 3
+    assert len(client.calls) == 11
+    assert result.arbiter_scorecard.winner == "B"
+    assert result.decision.startswith("# Executive Decision")
 
 
-@pytest.mark.parametrize(
-    ("rounds", "expected_calls"),
-    [(1, 10), (2, 13), (3, 16), (4, 19), (5, 22)],
-)
-def test_call_count_scales_with_rounds(
-    tmp_path: Path,
-    rounds: int,
-    expected_calls: int,
-) -> None:
-    client = FakeClient()
+def test_high_impact_objection_forces_another_round(tmp_path: Path) -> None:
+    client = FakeClient(high_first_round=True)
     debate = ArchitectureDebate(
         client,
         model_a="model-a",
         model_b="model-b",
         model_c="model-c",
-        rounds=rounds,
+        rounds=3,
     )
 
     result = debate.run(question="Question", context=make_context(tmp_path))
 
-    assert len(client.calls) == expected_calls
-    assert len(result.debate_rounds) == rounds
-    assert result.rounds_requested == rounds
+    assert result.rounds_completed == 2
+    assert len(client.calls) == 14
 
 
-def test_rounds_must_be_between_one_and_five() -> None:
+def test_round_limit_is_one_through_three() -> None:
     client = FakeClient()
-
-    with pytest.raises(ValueError, match="between 1 and 5"):
+    with pytest.raises(ValueError, match="between 1 and 3"):
         ArchitectureDebate(client, model_a="a", model_b="b", model_c="c", rounds=0)
+    with pytest.raises(ValueError, match="between 1 and 3"):
+        ArchitectureDebate(client, model_a="a", model_b="b", model_c="c", rounds=4)
 
-    with pytest.raises(ValueError, match="between 1 and 5"):
-        ArchitectureDebate(client, model_a="a", model_b="b", model_c="c", rounds=6)
 
-
-def test_initial_proposals_are_blind(tmp_path: Path) -> None:
+def test_initial_proposals_remain_blind(tmp_path: Path) -> None:
     client = FakeClient()
     debate = ArchitectureDebate(
         client,
@@ -129,76 +148,61 @@ def test_initial_proposals_are_blind(tmp_path: Path) -> None:
         model_c="model-c",
         rounds=1,
     )
-    context = make_context(tmp_path, text="repository evidence")
+    debate.run(question="Question", context=make_context(tmp_path, "UNIQUE_REPO_EVIDENCE"))
 
-    debate.run(question="Question", context=context)
-
-    proposal_a = str(client.calls[0]["user"])
-    proposal_b = str(client.calls[1]["user"])
-    proposal_c = str(client.calls[2]["user"])
-
-    assert "response-1" not in proposal_b
-    assert "response-1" not in proposal_c
-    assert "response-2" not in proposal_c
-    assert "repository evidence" in proposal_a
-    assert "repository evidence" in proposal_b
-    assert "repository evidence" in proposal_c
+    first_three = [str(call["user"]) for call in client.calls[:3]]
+    assert all("UNIQUE_REPO_EVIDENCE" in prompt for prompt in first_three)
+    assert "response-1" not in first_three[1]
+    assert "response-1" not in first_three[2]
+    assert "response-2" not in first_three[2]
 
 
-def test_each_new_round_uses_previous_round_state_symmetrically(tmp_path: Path) -> None:
+def test_research_runs_after_blind_proposals_and_before_debate(tmp_path: Path) -> None:
     client = FakeClient()
-    debate = ArchitectureDebate(
-        client,
-        model_a="model-a",
-        model_b="model-b",
-        model_c="model-c",
-        rounds=2,
-    )
-    context = make_context(tmp_path, text="UNIQUE_FULL_REPO_EVIDENCE")
-
-    debate.run(question="Question", context=context)
-
-    round_two_a = str(client.calls[6]["user"])
-    round_two_b = str(client.calls[7]["user"])
-    round_two_c = str(client.calls[8]["user"])
-
-    for prompt in (round_two_a, round_two_b, round_two_c):
-        assert "response-4" in prompt
-        assert "response-5" in prompt
-        assert "response-6" in prompt
-
-    assert "response-7" not in round_two_b
-    assert "response-7" not in round_two_c
-    assert "response-8" not in round_two_c
-
-    assert "UNIQUE_FULL_REPO_EVIDENCE" in str(client.calls[3]["user"])
-    assert "UNIQUE_FULL_REPO_EVIDENCE" in str(client.calls[4]["user"])
-    assert "UNIQUE_FULL_REPO_EVIDENCE" in str(client.calls[5]["user"])
-    assert "UNIQUE_FULL_REPO_EVIDENCE" not in round_two_a
-    assert "UNIQUE_FULL_REPO_EVIDENCE" not in round_two_b
-    assert "UNIQUE_FULL_REPO_EVIDENCE" not in round_two_c
-
-
-def test_research_runs_after_blind_proposals_and_is_injected(tmp_path: Path) -> None:
-    client = FakeClient()
+    research = FakeResearchClient()
     debate = ArchitectureDebate(
         client,
         model_a="model-a",
         model_b="model-b",
         model_c="model-c",
         rounds=1,
-        research_client=FakeResearchClient(),  # type: ignore[arg-type]
+        research_client=research,  # type: ignore[arg-type]
         research_query_count=2,
     )
 
     result = debate.run(question="Question", context=make_context(tmp_path))
 
-    assert len(client.calls) == 11
-    assert "Blind proposal A" in str(client.calls[3]["user"])
-    assert "https://example.com/evidence" in str(client.calls[4]["user"])
-    assert "[S1]" in str(client.calls[4]["user"])
+    planner_calls = [call for call in client.calls if "evidence planner" in str(call["system"])]
+    coverage_calls = [call for call in client.calls if "checking whether" in str(call["system"])]
+    debate_calls = [
+        call for call in client.calls if "adversarial architecture council" in str(call["system"])
+    ]
+    assert len(planner_calls) == 1
+    assert len(coverage_calls) == 3
+    assert len(debate_calls) == 3
+    assert "https://example.com/evidence" in str(debate_calls[0]["user"])
     assert result.research_queries == (
-        "agent recovery checkpointing",
-        "architecture evidence durable workflows",
+        "text-to-sql query IR paper",
+        "text-to-sql architecture github repository",
     )
     assert result.research_evidence is not None
+
+
+def test_arbiter_is_a_fresh_role_and_code_computes_winner(tmp_path: Path) -> None:
+    client = FakeClient()
+    debate = ArchitectureDebate(
+        client,
+        model_a="model-a",
+        model_b="model-b",
+        model_c="model-c",
+        arbiter_model="model-arbiter",
+        rounds=1,
+    )
+
+    result = debate.run(question="Question", context=make_context(tmp_path))
+
+    arbiter_calls = [call for call in client.calls if call["model"] == "model-arbiter"]
+    assert len(arbiter_calls) == 2
+    assert result.arbiter_model == "model-arbiter"
+    assert result.arbiter_scorecard.winner == "B"
+    assert result.arbiter_scorecard.weighted_totals["B"] > result.arbiter_scorecard.weighted_totals["A"]
