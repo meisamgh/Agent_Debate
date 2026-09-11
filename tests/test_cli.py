@@ -3,24 +3,17 @@ import pytest
 from arch_council.cli import _build_parser
 
 
-def test_rounds_defaults_to_three() -> None:
-    parser = _build_parser()
-    args = parser.parse_args(
-        [
-            "review",
-            "--repo",
-            ".",
-            "--question",
-            "What architecture should we use?",
-        ]
+def test_review_defaults() -> None:
+    args = _build_parser().parse_args(
+        ["review", "--repo", ".", "--question", "What architecture should we use?"]
     )
-
     assert args.rounds == 3
     assert args.research is False
     assert args.research_provider == "searxng"
-    assert args.searxng_url is None
     assert args.research_queries == 4
     assert args.research_results == 3
+    assert args.evidence_inspections == 4
+    assert args.arbiter_model is None
 
 
 def test_chat_command_is_available() -> None:
@@ -38,61 +31,42 @@ def test_chat_tool_budget_can_be_overridden() -> None:
     assert args.max_tool_steps == 4
 
 
-def test_rounds_accepts_one_through_five() -> None:
+def test_rounds_accepts_one_through_three() -> None:
     parser = _build_parser()
-
-    for rounds in range(1, 6):
+    for rounds in range(1, 4):
         args = parser.parse_args(
-            [
-                "review",
-                "--repo",
-                ".",
-                "--question",
-                "Question",
-                "--rounds",
-                str(rounds),
-            ]
+            ["review", "--repo", ".", "--question", "Question", "--rounds", str(rounds)]
         )
         assert args.rounds == rounds
 
 
-def test_rounds_rejects_values_outside_range() -> None:
-    parser = _build_parser()
-
+def test_rounds_rejects_four() -> None:
     with pytest.raises(SystemExit):
-        parser.parse_args(
-            [
-                "review",
-                "--repo",
-                ".",
-                "--question",
-                "Question",
-                "--rounds",
-                "6",
-            ]
+        _build_parser().parse_args(
+            ["review", "--repo", ".", "--question", "Question", "--rounds", "4"]
         )
 
 
-def test_model_c_override_is_available() -> None:
-    parser = _build_parser()
-    args = parser.parse_args(
+def test_arbiter_and_evidence_budget_can_be_overridden() -> None:
+    args = _build_parser().parse_args(
         [
             "review",
             "--repo",
             ".",
             "--question",
             "Question",
-            "--model-c",
-            "custom-model-c",
+            "--arbiter-model",
+            "judge-model",
+            "--evidence-inspections",
+            "6",
         ]
     )
-
-    assert args.model_c == "custom-model-c"
+    assert args.arbiter_model == "judge-model"
+    assert args.evidence_inspections == 6
 
 
 def test_research_and_readme_only_flags_are_available() -> None:
-    parser = _build_parser()
-    args = parser.parse_args(
+    args = _build_parser().parse_args(
         [
             "review",
             "--repo",
@@ -111,7 +85,6 @@ def test_research_and_readme_only_flags_are_available() -> None:
             "4",
         ]
     )
-
     assert args.readme_only is True
     assert args.research is True
     assert args.research_provider == "searxng"
@@ -121,8 +94,7 @@ def test_research_and_readme_only_flags_are_available() -> None:
 
 
 def test_tavily_remains_an_optional_provider() -> None:
-    parser = _build_parser()
-    args = parser.parse_args(
+    args = _build_parser().parse_args(
         [
             "review",
             "--repo",
@@ -134,15 +106,12 @@ def test_tavily_remains_an_optional_provider() -> None:
             "tavily",
         ]
     )
-
     assert args.research_provider == "tavily"
 
 
 def test_readme_only_and_diff_base_are_mutually_exclusive() -> None:
-    parser = _build_parser()
-
     with pytest.raises(SystemExit):
-        parser.parse_args(
+        _build_parser().parse_args(
             [
                 "review",
                 "--repo",
