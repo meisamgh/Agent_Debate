@@ -23,6 +23,12 @@ def test_rounds_defaults_to_three() -> None:
     assert args.research_results == 3
 
 
+def test_chat_command_is_available() -> None:
+    args = _build_parser().parse_args(["chat", "--repo", ".", "--readme-only"])
+    assert args.command == "chat"
+    assert args.readme_only is True
+
+
 def test_rounds_accepts_one_through_five() -> None:
     parser = _build_parser()
 

@@ -119,6 +119,22 @@ Because `searxng` is the default research provider, `--research-provider searxng
 
 With `--readme-only`, the council receives only the repository's root README; it does not receive source files or the repository tree.
 
+## Interactive architecture agent
+
+For an ongoing architecture conversation, use the agent mode. It loads the repository once and
+keeps the last several turns, so you can ask follow-up questions such as “what would you change
+first?” or “compare that with an event-driven design.”
+
+```bash
+arch-council chat \
+  --repo "/Users/meisam/Documents/text-to-sql/semantic_text2sql_ideal" \
+  --readme-only
+```
+
+Type `exit` or `quit` to leave. The agent labels claims as confirmed evidence, assumptions,
+recommendations, or items needing validation; it does not treat proposed architecture as already
+implemented.
+
 ## External research providers
 
 Research happens **after** the three blind proposals so outside sources do not anchor the models' initial thinking.

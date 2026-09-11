@@ -8,6 +8,7 @@ from .client import AnthropicGatewayClient, LLMError
 from .config import Settings
 from .context import build_diff_context, build_readme_context, build_repository_context
 from .debate import ArchitectureDebate, write_report
+from .agent import ArchitectureAgent
 from .research import ResearchError, SearXNGResearchClient, TavilyResearchClient
 
 
@@ -84,7 +85,51 @@ def _build_parser() -> argparse.ArgumentParser:
         default="reports",
         help="Directory for generated Markdown reports",
     )
+    chat = subparsers.add_parser("chat", help="Discuss repository architecture interactively")
+    chat.add_argument("--repo", required=True, help="Path to the local repository")
+    chat.add_argument("--model", help="Model used for the discussion")
+    chat.add_argument("--readme-only", action="store_true", help="Use only the root README")
+    chat.add_argument("--research", action="store_true", help="Research each question online")
+    chat.add_argument("--research-provider", choices=("searxng", "tavily"), default="searxng")
+    chat.add_argument("--searxng-url", help="SearXNG URL; defaults to SEARXNG_URL")
+    chat.add_argument("--max-context-chars", type=int, default=120_000)
     return parser
+
+
+def _run_chat(args: argparse.Namespace) -> int:
+    settings = Settings.from_env()
+    context = (build_readme_context if args.readme_only else build_repository_context)(
+        args.repo, max_chars=args.max_context_chars
+    )
+    research_client = None
+    if args.research:
+        if args.research_provider == "searxng":
+            research_client = SearXNGResearchClient(args.searxng_url or settings.searxng_url)
+        elif not settings.tavily_api_key:
+            raise RuntimeError("chat --research --research-provider tavily requires TAVILY_API_KEY")
+        else:
+            research_client = TavilyResearchClient(settings.tavily_api_key)
+    agent = ArchitectureAgent(
+        AnthropicGatewayClient(settings.api_key, settings.base_url, settings.timeout_seconds),
+        model=args.model or settings.model_a,
+        context=context,
+        research_client=research_client,
+    )
+    print(f"Architecture chat for {context.root}. Type 'exit' or Ctrl-D to stop.")
+    while True:
+        try:
+            question = input("\nYou: ")
+        except EOFError:
+            print()
+            break
+        if question.strip().lower() in {"exit", "quit"}:
+            break
+        try:
+            print(f"\nArchCouncil: {agent.ask(question)}")
+        except (LLMError, ValueError) as exc:
+            print(f"Chat error: {exc}", file=sys.stderr)
+            return 2
+    return 0
 
 
 def _run_review(args: argparse.Namespace) -> int:
@@ -174,6 +219,8 @@ def main() -> None:
     try:
         if args.command == "review":
             raise SystemExit(_run_review(args))
+        if args.command == "chat":
+            raise SystemExit(_run_chat(args))
         parser.error(f"Unknown command: {args.command}")
     except (ValueError, RuntimeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
