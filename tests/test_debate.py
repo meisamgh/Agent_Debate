@@ -7,7 +7,6 @@ from arch_council.context import RepositoryContext
 from arch_council.debate import ArchitectureDebate
 from arch_council.research import ResearchPack, ResearchSource
 
-
 SCORES = {
     "repository_fit": 3,
     "external_evidence_strength": 3,
@@ -105,7 +104,6 @@ def test_dynamic_council_stops_after_first_converged_round(tmp_path: Path) -> No
         model_c="model-c",
         rounds=3,
     )
-
     result = debate.run(question="Which architecture is safer?", context=make_context(tmp_path))
 
     assert result.rounds_completed == 1
@@ -124,7 +122,6 @@ def test_high_impact_objection_forces_another_round(tmp_path: Path) -> None:
         model_c="model-c",
         rounds=3,
     )
-
     result = debate.run(question="Question", context=make_context(tmp_path))
 
     assert result.rounds_completed == 2
@@ -169,7 +166,6 @@ def test_research_runs_after_blind_proposals_and_before_debate(tmp_path: Path) -
         research_client=research,  # type: ignore[arg-type]
         research_query_count=2,
     )
-
     result = debate.run(question="Question", context=make_context(tmp_path))
 
     planner_calls = [call for call in client.calls if "evidence planner" in str(call["system"])]
@@ -198,7 +194,6 @@ def test_arbiter_is_a_fresh_role_and_code_computes_winner(tmp_path: Path) -> Non
         arbiter_model="model-arbiter",
         rounds=1,
     )
-
     result = debate.run(question="Question", context=make_context(tmp_path))
 
     arbiter_calls = [call for call in client.calls if call["model"] == "model-arbiter"]
