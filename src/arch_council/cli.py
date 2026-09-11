@@ -100,7 +100,7 @@ def _build_parser() -> argparse.ArgumentParser:
     chat.add_argument(
         "--max-tool-steps",
         type=int,
-        choices=range(0, 6),
+        choices=range(6),
         default=2,
         metavar="0-5",
         help="Maximum search actions per question before forced synthesis (default: 2)",
