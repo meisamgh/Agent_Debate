@@ -1,3 +1,3 @@
-"""ArchCouncil: evidence-grounded multi-model architecture review."""
+"""ArchCouncil: evidence-grounded architecture review and bounded agent."""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
