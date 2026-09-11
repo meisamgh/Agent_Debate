@@ -20,7 +20,7 @@ class FakeResearchClient:
         self.queries: list[str] = []
 
     def search_many(self, queries, **kwargs):
-        query = list(queries)[0]
+        query = next(iter(queries))
         self.queries.append(query)
         return ResearchPack(
             queries=(query,),
