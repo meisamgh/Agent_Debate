@@ -114,7 +114,6 @@ def parse_evidence_gaps(text: str, *, max_gaps: int = 2) -> tuple[EvidenceReques
 def parse_debate_signal(text: str) -> DebateSignal:
     payload = _extract_json_object(text)
     if payload is None:
-        # Invalid structured output is uncertainty, not evidence of convergence.
         return DebateSignal(True, (), True)
 
     objections = payload.get("unresolved_objections", [])
@@ -199,13 +198,13 @@ def parse_arbiter_scorecard(text: str) -> ArbiterScorecard:
         raise ValueError("Arbiter returned invalid JSON scorecard")
     candidates = payload.get("candidates")
     if not isinstance(candidates, dict):
-        raise ValueError("Arbiter scorecard is missing candidates")
+        raise TypeError("Arbiter scorecard candidates must be an object")
 
     normalized: dict[str, dict[str, int]] = {}
     for candidate in ("A", "B", "C"):
         raw = candidates.get(candidate)
         if not isinstance(raw, dict):
-            raise ValueError(f"Arbiter scorecard is missing candidate {candidate}")
+            raise TypeError(f"Arbiter scorecard candidate {candidate} must be an object")
         scores: dict[str, int] = {}
         for criterion in ARBITER_WEIGHTS:
             value = raw.get(criterion)
