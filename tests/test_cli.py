@@ -27,6 +27,15 @@ def test_chat_command_is_available() -> None:
     args = _build_parser().parse_args(["chat", "--repo", ".", "--readme-only"])
     assert args.command == "chat"
     assert args.readme_only is True
+    assert args.max_tool_steps == 2
+
+
+def test_chat_tool_budget_can_be_overridden() -> None:
+    args = _build_parser().parse_args(
+        ["chat", "--repo", ".", "--research", "--max-tool-steps", "4"]
+    )
+    assert args.research is True
+    assert args.max_tool_steps == 4
 
 
 def test_rounds_accepts_one_through_five() -> None:
