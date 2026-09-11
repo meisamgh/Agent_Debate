@@ -28,7 +28,7 @@ EVIDENCE_COVERAGE_SYSTEM = """Check whether the shared evidence pack is missing 
 """
 
 ARBITER_SCORE_SYSTEM = """You are an impartial architecture arbiter, not Architect A, B, or C.
-Score the three final candidates independently. Do not vote and do not reward agreement. Use only supplied repository evidence, debate state, and source-labeled external evidence. Predicted correctness impact is an unverified prediction, not an observed result. Return strict JSON only.
+Score the three final candidates independently. Do not vote and do not reward agreement. Use only supplied repository evidence, debate state, and source-labeled external evidence. Predicted correctness impact is an unverified prediction, not an observed result. Every score must have a short justification and evidence references where available. Return strict JSON only.
 """
 
 ADR_WRITER_SYSTEM = """You are the final ADR editor after deterministic weighted arbitration.
@@ -220,12 +220,23 @@ def arbiter_score_prompt(
     revision_c: str,
     repository_evidence: str,
     external_evidence: str | None,
+    debate_transcript: str,
 ) -> str:
     evidence = external_evidence or "No external evidence was supplied."
     rubric = arbiter_rubric_text()
     zero_scores = {criterion: 0 for criterion in ARBITER_WEIGHTS}
+    empty_justifications = {
+        criterion: {"evidence": [], "reason": ""} for criterion in ARBITER_WEIGHTS
+    }
     template = json.dumps(
-        {"candidates": {"A": zero_scores, "B": zero_scores, "C": zero_scores}},
+        {
+            "candidates": {"A": zero_scores, "B": zero_scores, "C": zero_scores},
+            "justifications": {
+                "A": empty_justifications,
+                "B": empty_justifications,
+                "C": empty_justifications,
+            },
+        },
         indent=2,
     )
     return f"""Architecture question:
@@ -236,6 +247,9 @@ Repository evidence:
 
 External evidence:
 {evidence}
+
+Debate transcript:
+{debate_transcript}
 
 Candidate A:
 {revision_a}
@@ -252,7 +266,7 @@ Weighted rubric:
 Return strict JSON matching this shape:
 {template}
 
-Replace every score with an integer 0-4. Do not add a winner; code computes weighted totals and tie-breaks deterministically.
+Replace every score with an integer 0-4. For each criterion, give a short reason and evidence references such as S1 when available; use REPOSITORY or DEBATE for internal evidence. Do not add a winner; code computes weighted totals and tie-breaks deterministically.
 """
 
 
