@@ -115,18 +115,17 @@ class EvidenceInspector:
         self.max_chars = max_chars
 
     def inspect_pack(self, pack: ResearchPack, *, max_sources: int = 4) -> ResearchPack:
-        inspected_count = 0
+        inspection_attempts = 0
         sources: list[ResearchSource] = []
         for source in pack.sources:
             source_type = source.source_type or _source_type(source.url)
             inspection = source.inspection
-            if inspected_count < max_sources and source_type in {
+            if inspection_attempts < max_sources and source_type in {
                 "github_repository",
                 "research_paper",
             }:
+                inspection_attempts += 1
                 inspection = self.inspect(source.url, source_type=source_type)
-                if inspection:
-                    inspected_count += 1
             sources.append(
                 ResearchSource(
                     source_id=source.source_id,
