@@ -1,10 +1,11 @@
 # ArchCouncil
 
-**ArchCouncil** is a deterministic three-model architecture council for software repositories, with optional external research grounding.
+**ArchCouncil** is an evidence-grounded architecture review tool for software repositories. It has two complementary modes:
 
-It can share the whole selected repository context, a git diff, or **only the root README**. Three independent architecture reviewers first propose designs blindly. If `--research` is enabled, a separate research-planning step turns their disagreements into search queries, gathers outside evidence, and injects source-labeled evidence into the debate. The council then debates, revises, and produces an Architecture Decision Record (ADR).
+- a deterministic, bounded **three-model architecture council** that debates and produces an ADR;
+- a bounded **tool-using architecture agent** for interactive follow-up questions.
 
-The LLM gateway defaults to the JustWoker Anthropic-compatible `POST /v1/messages` endpoint. External research is provider-agnostic: **SearXNG is the default free/self-hosted provider**, while Tavily remains optional.
+It can share broad repository context, a git diff, or **only the root README**. External research is provider-agnostic: **SearXNG is the default free/self-hosted provider**, while Tavily remains optional. The LLM gateway defaults to the JustWoker Anthropic-compatible `POST /v1/messages` endpoint.
 
 ## Council roles
 
@@ -14,7 +15,7 @@ The LLM gateway defaults to the JustWoker Anthropic-compatible `POST /v1/message
 
 The council does not use simple majority voting. A strong minority position is preserved when its evidence is better.
 
-## Evidence-grounded workflow
+## Council workflow
 
 ```text
 README.md / repository / git diff
@@ -53,7 +54,63 @@ README.md / repository / git diff
           Final ADR
 ```
 
-External sources are treated as **untrusted evidence**, not truth. The models are instructed to cite source IDs such as `[S1]`, reject weak evidence, and avoid claiming more than a source supports.
+External sources are treated as **untrusted evidence**, not truth.
+
+## Interactive architecture agent
+
+`arch-council chat` is a real bounded tool loop rather than just a chat prompt. With `--research`, the model decides whether external evidence is needed, chooses a focused search query, observes SearXNG/Tavily results, and then decides whether to search again or answer.
+
+```text
+user question
+    |
+    v
+agent decision
+    |--------------------|
+    |                    |
+ ANSWER                SEARCH
+                         |
+                         v
+                    SearXNG tool
+                         |
+                         v
+                    observation
+                         |
+                         v
+                  agent decision
+                         |
+                  ... bounded ...
+                         |
+                         v
+                  final synthesis
+```
+
+The default budget is **2 search actions**. If both are used, the agent performs one forced final synthesis, so the default maximum is **3 LLM calls per question**. The loop cannot run indefinitely.
+
+Search failures are converted into observations so the agent can still answer from repository evidence instead of crashing solely because the search tool failed.
+
+Run it with local SearXNG:
+
+```bash
+arch-council chat \
+  --repo "/Users/meisam/Documents/text-to-sql/semantic_text2sql_ideal" \
+  --readme-only \
+  --research \
+  --research-provider searxng \
+  --max-tool-steps 2
+```
+
+Useful agent controls:
+
+```bash
+--research                         # give the agent a web-search tool
+--research-provider searxng        # default provider
+--searxng-url http://localhost:8080
+--max-tool-steps 2                 # 0-5; default 2
+```
+
+Without `--research`, agent chat uses repository evidence and one LLM call per question.
+
+The three council participants in `review` remain bounded reviewers; they are not independently autonomous agents. This keeps the debate reproducible and its call count predictable.
 
 ## Setup
 
@@ -79,8 +136,6 @@ Never commit `.env`.
 
 ArchCouncil includes `docker-compose.searxng.yml` and `searxng/settings.yml`. The supplied SearXNG configuration enables JSON output because ArchCouncil consumes the `/search?format=json` API.
 
-For local use:
-
 ```bash
 docker compose -f docker-compose.searxng.yml up -d
 ```
@@ -99,11 +154,7 @@ Stop it with:
 docker compose -f docker-compose.searxng.yml down
 ```
 
-The checked-in secret is only a local-development fallback. If you ever expose SearXNG beyond localhost, set a strong `SEARXNG_SECRET` in `.env` and review SearXNG's production security settings.
-
-## Recommended architecture-only run
-
-If you want the models to discuss architecture rather than implementation details, share only the README and use the local SearXNG research provider:
+## Recommended architecture-only council run
 
 ```bash
 arch-council review \
@@ -111,62 +162,31 @@ arch-council review \
   --readme-only \
   --research \
   --research-provider searxng \
-  --rounds 5 \
-  --question "Review the architecture described in this README. Debate the strongest production architecture. Focus on deterministic vs agentic boundaries, agent/workflow recovery, checkpointing, retries, resumability, idempotency, model and tool failures, partial execution, crash recovery, human escalation, scalability, observability, latency, cost, and maintainability. Use external evidence to challenge assumptions and introduce materially different architecture ideas."
+  --rounds 3 \
+  --question "Review the architecture described in this README. Debate the strongest production architecture, including deterministic vs agentic boundaries, recovery, checkpointing, retries, resumability, idempotency, model and tool failures, scalability, observability, latency, cost, and maintainability."
 ```
 
 Because `searxng` is the default research provider, `--research-provider searxng` can be omitted.
 
 With `--readme-only`, the council receives only the repository's root README; it does not receive source files or the repository tree.
 
-## Interactive architecture agent
-
-For an ongoing architecture conversation, use the agent mode. It loads the repository once and
-keeps the last several turns, so you can ask follow-up questions such as “what would you change
-first?” or “compare that with an event-driven design.”
-
-```bash
-arch-council chat \
-  --repo "/Users/meisam/Documents/text-to-sql/semantic_text2sql_ideal" \
-  --readme-only
-```
-
-Type `exit` or `quit` to leave. The agent labels claims as confirmed evidence, assumptions,
-recommendations, or items needing validation; it does not treat proposed architecture as already
-implemented.
-
 ## External research providers
 
-Research happens **after** the three blind proposals so outside sources do not anchor the models' initial thinking.
+Council research happens **after** the three blind proposals so outside sources do not anchor the models' initial thinking. The Research Planner uses Architect C's model to generate targeted search queries from the architecture question and all three blind proposals.
 
-The Research Planner uses Architect C's model to generate targeted search queries from the architecture question and all three blind proposals. The selected provider searches those queries. The resulting evidence pack includes source IDs, titles, URLs, bounded content excerpts, and relevance scores when a provider supplies them.
-
-Useful controls:
+Useful review controls:
 
 ```bash
---research                         # enable external evidence
---research-provider searxng        # default; no search API key
+--research
+--research-provider searxng
 --searxng-url http://localhost:8080
---research-queries 4               # 1-6 planned searches; default 4
---research-results 3               # 1-5 results/query; default 3
-```
-
-To use a different SearXNG instance:
-
-```bash
-arch-council review \
-  --repo . \
-  --readme-only \
-  --research \
-  --searxng-url https://your-searxng.example \
-  --question "What is the strongest production architecture?"
+--research-queries 4
+--research-results 3
 ```
 
 Many public SearXNG instances disable JSON responses. A self-hosted instance is recommended for predictable API access.
 
 ### Optional Tavily provider
-
-Tavily is still supported but is no longer required:
 
 ```env
 TAVILY_API_KEY=your_tavily_key
@@ -203,7 +223,7 @@ LLM calls = 8 + (3 × rounds)
 | 4 | 19 | 20 |
 | 5 | 22 | 23 |
 
-Each run has three blind proposals, three calls per debate round, three final revisions, and one ADR synthesis. Research mode adds one research-planning LLM call. Search-provider requests are separate from LLM calls.
+Each council run has three blind proposals, three calls per debate round, three final revisions, and one ADR synthesis. Research mode adds one research-planning LLM call. Search-provider requests are separate from LLM calls.
 
 ## What every debate round covers
 
@@ -236,7 +256,7 @@ arch-council review \
 
 ## Output
 
-Each run writes a Markdown report under `reports/` containing the three blind proposals, external research queries and source evidence when enabled, every three-way debate round, three final revisions, and the final ADR.
+Each council run writes a Markdown report under `reports/` containing the three blind proposals, external research queries and source evidence when enabled, every three-way debate round, three final revisions, and the final ADR.
 
 The ADR contains:
 
@@ -257,8 +277,6 @@ Do Not Change
 Revisit Triggers
 ```
 
-For `NEEDS EXPERIMENT`, the synthesis must provide a hypothesis, test, metric, and success criterion.
-
 ## Gateway and research defaults
 
 ```text
@@ -272,7 +290,7 @@ SearXNG URL:        http://localhost:8080
 Tavily:             optional
 ```
 
-`--model-c` currently uses the same JustWoker gateway as A and B. A true direct Anthropic Claude participant would require a second provider client and separate Anthropic credential.
+A true direct Anthropic Claude council participant would require a second provider client and separate Anthropic credential.
 
 ## Development
 
@@ -289,8 +307,9 @@ ruff check .
 - Repository context is bounded by `--max-context-chars`.
 - Search result excerpts and source count are bounded.
 - External search evidence is explicitly treated as untrusted.
+- Agent search steps are capped; there is no infinite autonomous loop.
+- Debate rounds are capped at five.
 - The tool never executes code from the reviewed repository.
-- Debate rounds are capped at five; there is no infinite autonomous loop.
 - Prefer `--readme-only` for architecture-only discussion and `--diff-base main` for PR-style review.
 
 ## License
