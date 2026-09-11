@@ -18,10 +18,10 @@ from .governance import (
 )
 from .prompts import (
     ADR_WRITER_SYSTEM,
+    ARBITER_SCORE_SYSTEM,
     ARCHITECT_A_SYSTEM,
     ARCHITECT_B_SYSTEM,
     ARCHITECT_C_SYSTEM,
-    ARBITER_SCORE_SYSTEM,
     CRITIC_SYSTEM,
     EVIDENCE_COVERAGE_SYSTEM,
     RESEARCH_PLANNER_SYSTEM,
@@ -294,6 +294,20 @@ class ArchitectureDebate:
         )
         return self._inspect(pack)
 
+    @staticmethod
+    def _transcript(rounds: list[DebateRound]) -> str:
+        return "\n\n".join(
+            f"""### Round {round_.number} — Architect A
+{round_.response_a}
+
+### Round {round_.number} — Architect B
+{round_.response_b}
+
+### Round {round_.number} — Architect C
+{round_.response_c}"""
+            for round_ in rounds
+        )
+
     def run(self, *, question: str, context: RepositoryContext) -> DebateResult:
         proposal_a = self.client.complete(
             model=self.model_a,
@@ -325,7 +339,8 @@ class ArchitectureDebate:
                 research_pack=research_pack,
             )
             targeted = self._research_requests(coverage_requests)
-            research_pack = merge_research_packs(research_pack, targeted)
+            if targeted is not None:
+                research_pack = merge_research_packs(research_pack, targeted)
 
         position_a = proposal_a
         position_b = proposal_b
@@ -399,7 +414,6 @@ class ArchitectureDebate:
                 )
             )
             position_a, position_b, position_c = response_a, response_b, response_c
-
             if not continue_debate:
                 break
 
@@ -408,7 +422,8 @@ class ArchitectureDebate:
                 max_requests=self.evidence_request_limit,
             )
             targeted = self._research_requests(round_requests)
-            research_pack = merge_research_packs(research_pack, targeted)
+            if targeted is not None:
+                research_pack = merge_research_packs(research_pack, targeted)
 
         external_evidence = research_pack.to_prompt() if research_pack else None
         revision_a = self.client.complete(
@@ -457,6 +472,7 @@ class ArchitectureDebate:
             ),
         )
 
+        transcript = self._transcript(debate_rounds)
         score_raw = self.client.complete(
             model=self.arbiter_model,
             system=ARBITER_SCORE_SYSTEM,
@@ -467,6 +483,7 @@ class ArchitectureDebate:
                 revision_c,
                 context.text,
                 external_evidence,
+                transcript,
             ),
             max_tokens=2500,
             temperature=0.0,
@@ -481,18 +498,6 @@ class ArchitectureDebate:
             },
             indent=2,
             sort_keys=True,
-        )
-
-        transcript = "\n\n".join(
-            f"""### Round {round_.number} — Architect A
-{round_.response_a}
-
-### Round {round_.number} — Architect B
-{round_.response_b}
-
-### Round {round_.number} — Architect C
-{round_.response_c}"""
-            for round_ in debate_rounds
         )
         decision = self.client.complete(
             model=self.arbiter_model,
