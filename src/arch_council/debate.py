@@ -1,25 +1,45 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from .client import AnthropicGatewayClient
 from .context import RepositoryContext
+from .governance import (
+    ArbiterScorecard,
+    EvidenceRequest,
+    dedupe_evidence_requests,
+    parse_arbiter_scorecard,
+    parse_debate_signal,
+    parse_evidence_gaps,
+    should_continue_debate,
+)
 from .prompts import (
+    ADR_WRITER_SYSTEM,
     ARCHITECT_A_SYSTEM,
     ARCHITECT_B_SYSTEM,
     ARCHITECT_C_SYSTEM,
+    ARBITER_SCORE_SYSTEM,
     CRITIC_SYSTEM,
+    EVIDENCE_COVERAGE_SYSTEM,
     RESEARCH_PLANNER_SYSTEM,
-    SYNTHESIS_SYSTEM,
+    adr_prompt,
+    arbiter_score_prompt,
     debate_round_prompt,
+    evidence_coverage_prompt,
     proposal_prompt,
     research_query_prompt,
     revision_prompt,
-    synthesis_prompt,
 )
-from .research import ResearchClient, ResearchPack, parse_research_queries
+from .research import (
+    EvidenceInspector,
+    ResearchClient,
+    ResearchPack,
+    merge_research_packs,
+    parse_research_queries,
+)
 
 
 @dataclass(frozen=True)
@@ -28,6 +48,7 @@ class DebateRound:
     response_a: str
     response_b: str
     response_c: str
+    continued: bool
 
 
 @dataclass(frozen=True)
@@ -36,7 +57,9 @@ class DebateResult:
     model_a: str
     model_b: str
     model_c: str
+    arbiter_model: str
     rounds_requested: int
+    rounds_completed: int
     proposal_a: str
     proposal_b: str
     proposal_c: str
@@ -45,14 +68,18 @@ class DebateResult:
     revision_b: str
     revision_c: str
     decision: str
+    arbiter_scorecard: ArbiterScorecard
     research_queries: tuple[str, ...] = ()
     research_evidence: str | None = None
+    coverage_requests: tuple[EvidenceRequest, ...] = ()
 
     def to_markdown(self, context: RepositoryContext) -> str:
         created = datetime.now(UTC).isoformat()
         files = "\n".join(f"- `{path}`" for path in context.included_files) or "- none"
         rounds = "\n\n".join(
             f"""## Debate Round {round_.number}
+
+- Continued after this round: `{round_.continued}`
 
 ### Architect A
 
@@ -70,15 +97,27 @@ class DebateResult:
         research = ""
         if self.research_evidence:
             queries = "\n".join(f"- {query}" for query in self.research_queries)
+            coverage = "\n".join(
+                f"- `{request.category}` ({request.priority}): {request.question}"
+                for request in self.coverage_requests
+            ) or "- none"
             research = f"""
 ## External Research Queries
 
 {queries}
 
+## Evidence Coverage Requests
+
+{coverage}
+
 ## External Research Evidence
 
 {self.research_evidence}
 """
+        score_rows = "\n".join(
+            f"- Candidate {candidate}: {score:.4f}"
+            for candidate, score in self.arbiter_scorecard.weighted_totals.items()
+        )
         return f"""# ArchCouncil Architecture Review
 
 - Created: {created}
@@ -88,7 +127,9 @@ class DebateResult:
 - Architect A: `{self.model_a}`
 - Architect B: `{self.model_b}`
 - Architect C: `{self.model_c}`
-- Debate rounds: `{self.rounds_requested}`
+- Arbiter model: `{self.arbiter_model}`
+- Maximum debate rounds: `{self.rounds_requested}`
+- Debate rounds completed: `{self.rounds_completed}`
 - External research: `{bool(self.research_evidence)}`
 
 ## Question
@@ -125,6 +166,12 @@ class DebateResult:
 
 {self.revision_c}
 
+## Deterministic Weighted Arbitration
+
+Winner: **Candidate {self.arbiter_scorecard.winner}**
+
+{score_rows}
+
 ## Final ADR
 
 {self.decision}
@@ -142,23 +189,43 @@ class ArchitectureDebate:
         research_client: ResearchClient | None = None,
         research_query_count: int = 4,
         research_results_per_query: int = 3,
+        arbiter_model: str | None = None,
+        evidence_inspector: EvidenceInspector | None = None,
+        evidence_inspection_limit: int = 4,
+        evidence_request_limit: int = 4,
     ) -> None:
-        if not 1 <= rounds <= 5:
-            raise ValueError("rounds must be between 1 and 5")
+        if not 1 <= rounds <= 3:
+            raise ValueError("rounds must be between 1 and 3")
         if not 1 <= research_query_count <= 6:
             raise ValueError("research_query_count must be between 1 and 6")
         if not 1 <= research_results_per_query <= 5:
             raise ValueError("research_results_per_query must be between 1 and 5")
+        if not 0 <= evidence_inspection_limit <= 8:
+            raise ValueError("evidence_inspection_limit must be between 0 and 8")
+        if not 1 <= evidence_request_limit <= 8:
+            raise ValueError("evidence_request_limit must be between 1 and 8")
         self.client = client
         self.model_a = model_a
         self.model_b = model_b
         self.model_c = model_c
+        self.arbiter_model = arbiter_model or model_a
         self.rounds = rounds
         self.research_client = research_client
         self.research_query_count = research_query_count
         self.research_results_per_query = research_results_per_query
+        self.evidence_inspector = evidence_inspector or EvidenceInspector()
+        self.evidence_inspection_limit = evidence_inspection_limit
+        self.evidence_request_limit = evidence_request_limit
 
-    def _research_after_blind_proposals(
+    def _inspect(self, pack: ResearchPack | None) -> ResearchPack | None:
+        if pack is None or self.evidence_inspection_limit == 0:
+            return pack
+        return self.evidence_inspector.inspect_pack(
+            pack,
+            max_sources=self.evidence_inspection_limit,
+        )
+
+    def _initial_research(
         self,
         *,
         question: str,
@@ -168,7 +235,6 @@ class ArchitectureDebate:
     ) -> ResearchPack | None:
         if self.research_client is None:
             return None
-
         raw_queries = self.client.complete(
             model=self.model_c,
             system=RESEARCH_PLANNER_SYSTEM,
@@ -185,16 +251,50 @@ class ArchitectureDebate:
         queries = parse_research_queries(raw_queries, max_queries=self.research_query_count)
         if not queries:
             queries = [question]
-
-        return self.research_client.search_many(
+        pack = self.research_client.search_many(
             queries,
             max_results_per_query=self.research_results_per_query,
             max_sources=min(18, self.research_query_count * self.research_results_per_query),
         )
+        return self._inspect(pack)
+
+    def _coverage_check(
+        self,
+        *,
+        question: str,
+        proposals: tuple[str, str, str],
+        research_pack: ResearchPack,
+    ) -> tuple[EvidenceRequest, ...]:
+        evidence = research_pack.to_prompt()
+        systems = (ARCHITECT_A_SYSTEM, ARCHITECT_B_SYSTEM, ARCHITECT_C_SYSTEM)
+        models = (self.model_a, self.model_b, self.model_c)
+        requests: list[EvidenceRequest] = []
+        for model, system, proposal in zip(models, systems, proposals, strict=True):
+            raw = self.client.complete(
+                model=model,
+                system=system + "\n" + EVIDENCE_COVERAGE_SYSTEM,
+                user=evidence_coverage_prompt(question, proposal, evidence),
+                max_tokens=1000,
+                temperature=0.1,
+            )
+            requests.extend(parse_evidence_gaps(raw))
+        return dedupe_evidence_requests(requests, max_requests=self.evidence_request_limit)
+
+    def _research_requests(
+        self,
+        requests: tuple[EvidenceRequest, ...],
+    ) -> ResearchPack | None:
+        if self.research_client is None or not requests:
+            return None
+        queries = [request.question for request in requests]
+        pack = self.research_client.search_many(
+            queries,
+            max_results_per_query=self.research_results_per_query,
+            max_sources=min(12, len(queries) * self.research_results_per_query),
+        )
+        return self._inspect(pack)
 
     def run(self, *, question: str, context: RepositoryContext) -> DebateResult:
-        # Blind proposals: no architect sees another model's first answer or external search.
-        # This preserves genuine model diversity before shared evidence can anchor the council.
         proposal_a = self.client.complete(
             model=self.model_a,
             system=ARCHITECT_A_SYSTEM,
@@ -211,13 +311,21 @@ class ArchitectureDebate:
             user=proposal_prompt(question, context.text),
         )
 
-        research_pack = self._research_after_blind_proposals(
+        research_pack = self._initial_research(
             question=question,
             proposal_a=proposal_a,
             proposal_b=proposal_b,
             proposal_c=proposal_c,
         )
-        external_evidence = research_pack.to_prompt() if research_pack else None
+        coverage_requests: tuple[EvidenceRequest, ...] = ()
+        if research_pack is not None:
+            coverage_requests = self._coverage_check(
+                question=question,
+                proposals=(proposal_a, proposal_b, proposal_c),
+                research_pack=research_pack,
+            )
+            targeted = self._research_requests(coverage_requests)
+            research_pack = merge_research_packs(research_pack, targeted)
 
         position_a = proposal_a
         position_b = proposal_b
@@ -225,9 +333,8 @@ class ArchitectureDebate:
         debate_rounds: list[DebateRound] = []
 
         for round_number in range(1, self.rounds + 1):
-            # All three react to the same previous-round state, so no same-round response
-            # can anchor another architect or create an ordering advantage.
             repository_evidence = context.text if round_number == 1 else None
+            external_evidence = research_pack.to_prompt() if research_pack else None
             response_a = self.client.complete(
                 model=self.model_a,
                 system=ARCHITECT_A_SYSTEM + "\n" + CRITIC_SYSTEM,
@@ -273,18 +380,37 @@ class ArchitectureDebate:
                     external_evidence=external_evidence,
                 ),
             )
+            signals = tuple(
+                parse_debate_signal(response)
+                for response in (response_a, response_b, response_c)
+            )
+            continue_debate = should_continue_debate(
+                round_number=round_number,
+                max_rounds=self.rounds,
+                signals=signals,
+            )
             debate_rounds.append(
                 DebateRound(
                     number=round_number,
                     response_a=response_a,
                     response_b=response_b,
                     response_c=response_c,
+                    continued=continue_debate,
                 )
             )
-            position_a = response_a
-            position_b = response_b
-            position_c = response_c
+            position_a, position_b, position_c = response_a, response_b, response_c
 
+            if not continue_debate:
+                break
+
+            round_requests = dedupe_evidence_requests(
+                [request for signal in signals for request in signal.evidence_requests],
+                max_requests=self.evidence_request_limit,
+            )
+            targeted = self._research_requests(round_requests)
+            research_pack = merge_research_packs(research_pack, targeted)
+
+        external_evidence = research_pack.to_prompt() if research_pack else None
         revision_a = self.client.complete(
             model=self.model_a,
             system=ARCHITECT_A_SYSTEM,
@@ -331,6 +457,32 @@ class ArchitectureDebate:
             ),
         )
 
+        score_raw = self.client.complete(
+            model=self.arbiter_model,
+            system=ARBITER_SCORE_SYSTEM,
+            user=arbiter_score_prompt(
+                question,
+                revision_a,
+                revision_b,
+                revision_c,
+                context.text,
+                external_evidence,
+            ),
+            max_tokens=2500,
+            temperature=0.0,
+        )
+        scorecard = parse_arbiter_scorecard(score_raw)
+        score_summary = json.dumps(
+            {
+                "weights_applied_by_code": True,
+                "scores": scorecard.scores,
+                "weighted_totals": scorecard.weighted_totals,
+                "winner": scorecard.winner,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+
         transcript = "\n\n".join(
             f"""### Round {round_.number} — Architect A
 {round_.response_a}
@@ -342,11 +494,10 @@ class ArchitectureDebate:
 {round_.response_c}"""
             for round_ in debate_rounds
         )
-
         decision = self.client.complete(
-            model=self.model_a,
-            system=SYNTHESIS_SYSTEM,
-            user=synthesis_prompt(
+            model=self.arbiter_model,
+            system=ADR_WRITER_SYSTEM,
+            user=adr_prompt(
                 question,
                 proposal_a,
                 proposal_b,
@@ -355,6 +506,8 @@ class ArchitectureDebate:
                 revision_a,
                 revision_b,
                 revision_c,
+                score_summary,
+                scorecard.winner,
                 external_evidence=external_evidence,
             ),
             max_tokens=8000,
@@ -366,7 +519,9 @@ class ArchitectureDebate:
             model_a=self.model_a,
             model_b=self.model_b,
             model_c=self.model_c,
+            arbiter_model=self.arbiter_model,
             rounds_requested=self.rounds,
+            rounds_completed=len(debate_rounds),
             proposal_a=proposal_a,
             proposal_b=proposal_b,
             proposal_c=proposal_c,
@@ -375,8 +530,10 @@ class ArchitectureDebate:
             revision_b=revision_b,
             revision_c=revision_c,
             decision=decision,
+            arbiter_scorecard=scorecard,
             research_queries=research_pack.queries if research_pack else (),
             research_evidence=external_evidence,
+            coverage_requests=coverage_requests,
         )
 
 
