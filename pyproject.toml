@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arch-council"
-version = "0.4.0"
-description = "Evidence-grounded three-model architecture council with pluggable research providers"
+version = "0.5.0"
+description = "Evidence-grounded architecture council with a bounded tool-using architecture agent"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
