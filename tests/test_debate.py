@@ -28,11 +28,12 @@ class FakeClient:
     def complete(self, **kwargs: object) -> str:
         self.calls.append(kwargs)
         system = str(kwargs.get("system", ""))
-        if "evidence planner" in system:
+        system_lower = system.lower()
+        if "evidence planner" in system_lower:
             return "text-to-sql query IR paper\ntext-to-sql architecture github repository"
-        if "checking whether" in system:
+        if "shared evidence pack" in system_lower and "missing evidence" in system_lower:
             return '{"gaps": []}'
-        if "adversarial architecture council" in system:
+        if "adversarial architecture council" in system_lower:
             self.debate_calls += 1
             first_round = self.debate_calls <= 3
             high = self.high_first_round and first_round
@@ -54,11 +55,11 @@ class FakeClient:
                     "material_architecture_change": False,
                 }
             )
-        if "impartial architecture arbiter" in system:
+        if "impartial architecture arbiter" in system_lower:
             scores = {candidate: dict(SCORES) for candidate in ("A", "B", "C")}
             scores["B"]["external_evidence_strength"] = 4
             return json.dumps({"candidates": scores})
-        if "final ADR editor" in system:
+        if "final adr editor" in system_lower:
             return "# Executive Decision\nCandidate B wins."
         return f"response-{len(self.calls)}"
 
@@ -168,10 +169,19 @@ def test_research_runs_after_blind_proposals_and_before_debate(tmp_path: Path) -
     )
     result = debate.run(question="Question", context=make_context(tmp_path))
 
-    planner_calls = [call for call in client.calls if "evidence planner" in str(call["system"])]
-    coverage_calls = [call for call in client.calls if "checking whether" in str(call["system"])]
+    planner_calls = [
+        call for call in client.calls if "evidence planner" in str(call["system"]).lower()
+    ]
+    coverage_calls = [
+        call
+        for call in client.calls
+        if "shared evidence pack" in str(call["system"]).lower()
+        and "missing evidence" in str(call["system"]).lower()
+    ]
     debate_calls = [
-        call for call in client.calls if "adversarial architecture council" in str(call["system"])
+        call
+        for call in client.calls
+        if "adversarial architecture council" in str(call["system"]).lower()
     ]
     assert len(planner_calls) == 1
     assert len(coverage_calls) == 3
@@ -198,6 +208,7 @@ def test_arbiter_is_a_fresh_role_and_code_computes_winner(tmp_path: Path) -> Non
 
     arbiter_calls = [call for call in client.calls if call["model"] == "model-arbiter"]
     assert len(arbiter_calls) == 2
+    assert "Debate transcript:" in str(arbiter_calls[0]["user"])
     assert result.arbiter_model == "model-arbiter"
     assert result.arbiter_scorecard.winner == "B"
     assert result.arbiter_scorecard.weighted_totals["B"] > result.arbiter_scorecard.weighted_totals["A"]
