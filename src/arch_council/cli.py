@@ -15,7 +15,7 @@ from .research import ResearchError, SearXNGResearchClient, TavilyResearchClient
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="arch-council",
-        description="Run a bounded three-model architecture review over a local repository.",
+        description="Run a bounded evidence-grounded architecture council over a local repository.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -26,12 +26,16 @@ def _build_parser() -> argparse.ArgumentParser:
     review.add_argument("--model-b", help="Override Architect B model")
     review.add_argument("--model-c", help="Override Architect C model")
     review.add_argument(
+        "--arbiter-model",
+        help="Fresh model call used only for impartial weighted scoring and ADR writing",
+    )
+    review.add_argument(
         "--rounds",
         type=int,
-        choices=range(1, 6),
+        choices=range(1, 4),
         default=3,
-        metavar="1-5",
-        help="Number of three-way debate rounds after blind proposals (default: 3)",
+        metavar="1-3",
+        help="Maximum debate rounds; deterministic convergence may stop earlier (default: 3)",
     )
     context_group = review.add_mutually_exclusive_group()
     context_group.add_argument(
@@ -46,7 +50,7 @@ def _build_parser() -> argparse.ArgumentParser:
     review.add_argument(
         "--research",
         action="store_true",
-        help="Search external sources after blind proposals and ground the debate in evidence",
+        help="Search and inspect external evidence after blind proposals",
     )
     review.add_argument(
         "--research-provider",
@@ -64,7 +68,7 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=range(1, 7),
         default=4,
         metavar="1-6",
-        help="Number of research queries planned when --research is enabled (default: 4)",
+        help="Initial research queries when --research is enabled (default: 4)",
     )
     review.add_argument(
         "--research-results",
@@ -73,6 +77,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=3,
         metavar="1-5",
         help="Maximum search results per research query (default: 3)",
+    )
+    review.add_argument(
+        "--evidence-inspections",
+        type=int,
+        choices=range(9),
+        default=4,
+        metavar="0-8",
+        help="Maximum GitHub/arXiv sources deep-inspected per evidence pass (default: 4)",
     )
     review.add_argument(
         "--max-context-chars",
@@ -150,6 +162,8 @@ def _run_chat(args: argparse.Namespace) -> int:
         except EOFError:
             print()
             break
+        if not question.strip():
+            continue
         if question.strip().lower() in {"exit", "quit"}:
             break
         try:
@@ -171,6 +185,7 @@ def _run_review(args: argparse.Namespace) -> int:
     model_a = args.model_a or settings.model_a
     model_b = args.model_b or settings.model_b
     model_c = args.model_c or settings.model_c
+    arbiter_model = args.arbiter_model or model_a
 
     if args.readme_only:
         context = build_readme_context(args.repo, max_chars=args.max_context_chars)
@@ -195,7 +210,8 @@ def _run_review(args: argparse.Namespace) -> int:
             research_client = TavilyResearchClient(settings.tavily_api_key)
             research_label = "tavily"
 
-    total_llm_calls = 7 + (3 * args.rounds) + (1 if args.research else 0)
+    # Max budget: proposals + optional planner/coverage + debate + revisions + scoring + ADR.
+    max_llm_calls = 8 + (3 * args.rounds) + (4 if args.research else 0)
     print(f"Repository: {context.root}")
     print(f"Context mode: {context.mode}")
     print(f"Included files: {len(context.included_files)}")
@@ -204,17 +220,19 @@ def _run_review(args: argparse.Namespace) -> int:
     print(f"Architect A: {model_a} (Production Pragmatist)")
     print(f"Architect B: {model_b} (Scaling Challenger)")
     print(f"Architect C: {model_c} (Alternative/Mutation Architect)")
-    print(f"Debate rounds: {args.rounds}")
+    print(f"Arbiter: {arbiter_model} (fresh impartial scoring role)")
+    print(f"Maximum debate rounds: {args.rounds}; may stop earlier on deterministic convergence")
     print(f"External research: {research_label}")
     if args.research:
         print(
-            f"Research plan: {args.research_queries} queries × up to "
-            f"{args.research_results} results/query"
+            f"Research budget: {args.research_queries} initial queries × up to "
+            f"{args.research_results} results/query; deep inspections/pass: "
+            f"{args.evidence_inspections}"
         )
-    print(f"Planned LLM calls: {total_llm_calls}")
+    print(f"Maximum planned LLM calls: {max_llm_calls}")
     print(
-        "Flow: 3 blind proposals → optional external research → "
-        "three-way debate → 3 final revisions → ADR"
+        "Flow: 3 blind proposals → shared evidence → evidence coverage check → "
+        "dynamic debate → 3 final revisions → weighted arbiter score → ADR"
     )
 
     client = AnthropicGatewayClient(
@@ -227,20 +245,24 @@ def _run_review(args: argparse.Namespace) -> int:
         model_a=model_a,
         model_b=model_b,
         model_c=model_c,
+        arbiter_model=arbiter_model,
         rounds=args.rounds,
         research_client=research_client,
         research_query_count=args.research_queries,
         research_results_per_query=args.research_results,
+        evidence_inspection_limit=args.evidence_inspections,
     )
 
     try:
         result = debate.run(question=args.question, context=context)
-    except (LLMError, ResearchError) as exc:
+    except (LLMError, ResearchError, ValueError) as exc:
         print(f"Review error: {exc}", file=sys.stderr)
         return 2
 
     report = write_report(result, context, Path(args.output_dir))
-    print(f"\nReport written to: {report}")
+    print(f"\nRounds completed: {result.rounds_completed}/{result.rounds_requested}")
+    print(f"Weighted winner: Candidate {result.arbiter_scorecard.winner}")
+    print(f"Report written to: {report}")
     print("\n=== FINAL ADR ===\n")
     print(result.decision)
     return 0
