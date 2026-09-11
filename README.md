@@ -1,116 +1,206 @@
 # ArchCouncil
 
-**ArchCouncil** is an evidence-grounded architecture review tool for software repositories. It has two complementary modes:
+**ArchCouncil 0.6** is a bounded, evidence-grounded architecture review tool for software repositories.
 
-- a deterministic, bounded **three-model architecture council** that debates and produces an ADR;
-- a bounded **tool-using architecture agent** for interactive follow-up questions.
+It deliberately separates three responsibilities:
 
-It can share broad repository context, a git diff, or **only the root README**. External research is provider-agnostic: **SearXNG is the default free/self-hosted provider**, while Tavily remains optional. The LLM gateway defaults to the JustWoker Anthropic-compatible `POST /v1/messages` endpoint.
+- **independent LLM reasoning** for architectural diversity;
+- **centralized evidence gathering** so all reviewers argue from the same source pack;
+- **deterministic orchestration** for budgets, stopping, deduplication, weighted scoring, and workflow order.
+
+It also includes a separate bounded **interactive architecture agent** for follow-up discussion.
+
+## Design principle
+
+> LLMs make judgments. Code enforces process. Evidence constrains claims. The human retains authority.
+
+The council is not an autonomous swarm. Sol, Terra, and Luna cannot run uncontrolled plan/act loops. Research and debate are explicitly bounded.
 
 ## Council roles
 
-- **Architect A — Production Pragmatist (`gpt-5.6-sol`)**: reliability, simplicity, cost, debuggability, bounded workflows.
-- **Architect B — Scaling Challenger (`gpt-5.6-terra`)**: scalability, security, concurrency, observability, failure isolation, future constraints.
-- **Architect C — Alternative / Mutation Architect (`gpt-5.6-luna`)**: challenges shared assumptions and proposes materially different architectures.
+- **Architect A — Production Pragmatist (`gpt-5.6-sol`)**: reliability, simplicity, debuggability, cost, bounded workflows.
+- **Architect B — Scaling Challenger (`gpt-5.6-terra`)**: scalability, security, concurrency, observability, data contracts, failure isolation.
+- **Architect C — Alternative / Mutation Architect (`gpt-5.6-luna`)**: challenges shared assumptions and proposes materially different designs.
+- **Arbiter — fresh impartial role**: scores the final candidates with a fixed weighted rubric. By default it uses Architect A's model with fresh arbiter instructions; `--arbiter-model` can select another available model.
 
-The council does not use simple majority voting. A strong minority position is preserved when its evidence is better.
+The council never chooses an architecture by majority vote.
 
-## Council workflow
+## Evidence-driven workflow
 
 ```text
-README.md / repository / git diff
-              |
-              v
-      3 blind proposals
-      A       B       C
-              |
-              v
+README / repository / git diff
+             |
+             v
+       3 blind proposals
+      Sol   Terra   Luna
+             |
+             v
        Research Planner
-              |
-      disputed / uncertain claims
-              |
-              v
-      ResearchProvider interface
-          /             \
-         v               v
-   local SearXNG      Tavily (optional)
-      default/free
-         \               /
-          v             v
-    [S1] [S2] [S3] evidence pack
-              |
-              v
-       A <--> B <--> C
-       architecture debate
-              |
-     evidence-backed mutation
-     recovery analysis
-     minority positions
-              |
-              v
-       final revisions
-              |
-              v
-          Final ADR
+             |
+             v
+      shared web discovery
+      SearXNG / Tavily
+             |
+             v
+   bounded evidence inspection
+     GitHub README / arXiv
+             |
+             v
+     shared evidence pack
+             |
+             v
+  3 independent coverage checks
+  "what important evidence is missing?"
+             |
+             v
+ deterministic taxonomy dedup
+             |
+      targeted research
+             |
+             v
+       Debate Round 1
+             |
+             v
+ deterministic stop evaluator
+       /             \
+   stable             unresolved
+     |                    |
+     |              targeted evidence
+     |                    |
+     |              Round 2 / Round 3
+     |                    |
+     +---------+----------+
+               |
+               v
+       3 final revisions
+               |
+               v
+      impartial score call
+               |
+               v
+ deterministic weighted score
+               |
+               v
+         final ADR writer
+               |
+               v
+          human decision
 ```
 
-External sources are treated as **untrusted evidence**, not truth.
+## Why new ideas are evidence-gated
 
-## Interactive architecture agent
+Architect C is encouraged to produce mutations, but novelty is not treated as evidence.
 
-`arch-council chat` is a real bounded tool loop rather than just a chat prompt. With `--research`, the model decides whether external evidence is needed, chooses a focused search query, observes SearXNG/Tavily results, and then decides whether to search again or answer.
+Every materially new architecture idea is instructed to show:
 
 ```text
-user question
-    |
-    v
-agent decision
-    |--------------------|
-    |                    |
- ANSWER                SEARCH
-                         |
-                         v
-                    SearXNG tool
-                         |
-                         v
-                    observation
-                         |
-                         v
-                  agent decision
-                         |
-                  ... bounded ...
-                         |
-                         v
-                  final synthesis
+PROBLEM IN CURRENT ARCHITECTURE
+        -> EVIDENCE NEEDED / AVAILABLE
+        -> DERIVATION / REASONING
+        -> NEW DESIGN
+        -> TRADE-OFFS
+        -> VALIDATION TEST
 ```
 
-The default budget is **2 search actions**. If both are used, the agent performs one forced final synthesis, so the default maximum is **3 LLM calls per question**. The loop cannot run indefinitely.
+This is intended to reduce random "use an agent/framework" recommendations.
 
-Search failures are converted into observations so the agent can still answer from repository evidence instead of crashing solely because the search tool failed.
+## Research and source inspection
 
-Run it with local SearXNG:
+With `--research`, the initial research planner creates bounded search queries after the three blind proposals. This preserves independent first opinions before outside evidence can anchor the council.
 
-```bash
-arch-council chat \
-  --repo "/Users/meisam/Documents/text-to-sql/semantic_text2sql_ideal" \
-  --readme-only \
-  --research \
-  --research-provider searxng \
-  --max-tool-steps 2
+The current evidence layer can:
+
+- search through local/self-hosted **SearXNG** by default;
+- optionally use **Tavily**;
+- classify GitHub repositories, arXiv papers, documentation candidates, and ordinary web results;
+- deep-read a bounded number of **GitHub root READMEs**;
+- inspect **arXiv title, publication metadata, and abstract**;
+- retain other search results as bounded source snippets;
+- label search results as untrusted evidence.
+
+It intentionally does **not** crawl arbitrary URLs or entire repositories.
+
+`--evidence-inspections` is a hard candidate-attempt budget per evidence pass. A failed inspection still consumes one slot, so network work remains bounded.
+
+## Evidence coverage check
+
+A centralized evidence pack can create shared anchoring. To reduce that risk, each architect independently checks the pack before the first debate round and can request up to two missing evidence areas.
+
+Requests must use a fixed taxonomy, including:
+
+```text
+semantic_layer
+query_ir
+schema_selection
+table_retrieval
+column_retrieval
+join_planning
+query_planning
+sql_generation
+validation
+execution
+result_verification
+workflow_recovery
+agent_orchestration
+observability
+security
+evaluation
+latency
+cost
+scalability
+human_escalation
+other
 ```
 
-Useful agent controls:
+ArchCouncil deduplicates requests by category deterministically rather than asking another LLM to semantically merge them.
 
-```bash
---research                         # give the agent a web-search tool
---research-provider searxng        # default provider
---searxng-url http://localhost:8080
---max-tool-steps 2                 # 0-5; default 2
+## Dynamic debate stopping
+
+`--rounds` now means **maximum rounds**, from 1 to 3.
+
+Each debate response must return structured fields for:
+
+- unresolved objections;
+- `impact: high | medium | low`;
+- status;
+- concessions;
+- evidence requests;
+- whether the architecture materially changed.
+
+The orchestrator continues only when a meaningful reason remains:
+
+```text
+HIGH-impact unresolved objection
+OR new evidence request
+OR material architecture change
 ```
 
-Without `--research`, agent chat uses repository evidence and one LLM call per question.
+It stops early when none of those conditions remain, or stops unconditionally at the configured maximum.
 
-The three council participants in `review` remain bounded reviewers; they are not independently autonomous agents. This keeps the debate reproducible and its call count predictable.
+If a model returns invalid structured debate output, ArchCouncil treats it as uncertainty rather than falsely declaring convergence.
+
+## Deterministic weighted arbitration
+
+After debate, all three architects create final revised candidates. A fresh arbiter role reads the repository evidence, shared external evidence, debate transcript, and all three final candidates.
+
+The arbiter scores each candidate from 0 to 4. **Code**, not the LLM, applies these fixed weights:
+
+| Criterion | Weight |
+| --- | ---: |
+| Repository / requirement fit | 20% |
+| External evidence strength | 20% |
+| Testability / falsifiability | 20% |
+| Predicted correctness impact — **UNVERIFIED** | 15% |
+| Complexity / maintainability | 10% |
+| Recovery robustness | 5% |
+| Latency / cost | 5% |
+| Migration / reversibility | 5% |
+
+The arbiter is instructed to justify each score with repository, debate, or source references. Predicted correctness is explicitly treated as an unverified forecast until an experiment measures it.
+
+Tie-breaking is deterministic and prioritizes evidence strength, testability, repository fit, then predicted correctness impact.
+
+The final ADR writer receives the code-selected winner and cannot silently replace it with a majority preference. It can preserve compatible strengths and a minority report.
 
 ## Setup
 
@@ -123,7 +213,7 @@ pip install -e .
 cp .env.example .env
 ```
 
-Add your JustWoker key to `.env`:
+Add your gateway key to `.env`:
 
 ```env
 JUSTWOKER_API_KEY=your_key_here
@@ -132,20 +222,16 @@ SEARXNG_URL=http://localhost:8080
 
 Never commit `.env`.
 
-## Start the integrated free SearXNG service
-
-ArchCouncil includes `docker-compose.searxng.yml` and `searxng/settings.yml`. The supplied SearXNG configuration enables JSON output because ArchCouncil consumes the `/search?format=json` API.
+## Start SearXNG
 
 ```bash
 docker compose -f docker-compose.searxng.yml up -d
 ```
 
-The service binds only to `127.0.0.1:8080` by default.
-
-Check that JSON search works:
+Check JSON search:
 
 ```bash
-curl 'http://localhost:8080/search?q=agent+recovery&format=json'
+curl 'http://localhost:8080/search?q=text-to-sql+architecture&format=json'
 ```
 
 Stop it with:
@@ -154,7 +240,9 @@ Stop it with:
 docker compose -f docker-compose.searxng.yml down
 ```
 
-## Recommended architecture-only council run
+## Recommended architecture-invention run
+
+For architecture reasoning from the stated design rather than implementation details:
 
 ```bash
 arch-council review \
@@ -163,154 +251,137 @@ arch-council review \
   --research \
   --research-provider searxng \
   --rounds 3 \
-  --question "Review the architecture described in this README. Debate the strongest production architecture, including deterministic vs agentic boundaries, recovery, checkpointing, retries, resumability, idempotency, model and tool failures, scalability, observability, latency, cost, and maintainability."
+  --evidence-inspections 4 \
+  --question "Study the architecture described in the README deeply. Do not only optimize the current design. Identify concrete structural weaknesses and derive materially different alternatives only when supported by reasoning and relevant evidence from repositories, papers, documentation, or engineering examples. Challenge each other's assumptions and compare deterministic, agentic, hybrid, compiler-style, retrieval-centric, execution-guided, and semantic-layer approaches when justified. Preserve important minority positions and clearly mark predicted benefits as unverified until tested."
 ```
 
-Because `searxng` is the default research provider, `--research-provider searxng` can be omitted.
+`--rounds 3` is a ceiling. The council may finish after one or two rounds if the structured convergence rule is satisfied.
 
-With `--readme-only`, the council receives only the repository's root README; it does not receive source files or the repository tree.
-
-## External research providers
-
-Council research happens **after** the three blind proposals so outside sources do not anchor the models' initial thinking. The Research Planner uses Architect C's model to generate targeted search queries from the architecture question and all three blind proposals.
-
-Useful review controls:
-
-```bash
---research
---research-provider searxng
---searxng-url http://localhost:8080
---research-queries 4
---research-results 3
-```
-
-Many public SearXNG instances disable JSON responses. A self-hosted instance is recommended for predictable API access.
-
-### Optional Tavily provider
-
-```env
-TAVILY_API_KEY=your_tavily_key
-```
-
-```bash
-arch-council review \
-  --repo . \
-  --readme-only \
-  --research \
-  --research-provider tavily \
-  --question "What is the strongest production architecture?"
-```
-
-## Debate depth and call count
+## LLM call budget
 
 Without external research:
 
 ```text
-LLM calls = 7 + (3 × rounds)
+maximum LLM calls = 8 + (3 × max_rounds)
 ```
 
 With research:
 
 ```text
-LLM calls = 8 + (3 × rounds)
+maximum LLM calls = 12 + (3 × max_rounds)
 ```
 
-| Debate rounds | No research | With research |
+The four research-mode LLM calls are one research-planner call plus three independent evidence-coverage checks. Search requests and source inspection HTTP requests are not LLM calls.
+
+| Max rounds | No research max | Research max |
 | ---: | ---: | ---: |
-| 1 | 10 | 11 |
-| 2 | 13 | 14 |
-| 3 (default) | 16 | 17 |
-| 4 | 19 | 20 |
-| 5 | 22 | 23 |
+| 1 | 11 | 15 |
+| 2 | 14 | 18 |
+| 3 | 17 | 21 |
 
-Each council run has three blind proposals, three calls per debate round, three final revisions, and one ADR synthesis. Research mode adds one research-planning LLM call. Search-provider requests are separate from LLM calls.
+Actual calls can be lower when the debate converges before the configured maximum.
 
-## What every debate round covers
+## Context modes
 
-Each architect must explicitly address the strongest competing points, external evidence, concessions, rebuttals, shared assumptions, unresolved disagreements, experiments, and its current architecture position. When relevant, every round also evaluates **agent/workflow recovery**: checkpoints, retries, resumability, idempotency, timeouts, fallback models/tools, partial execution, process crashes, and human escalation.
-
-Later rounds do not resend the full repository context. They carry compact debate state. The external evidence pack remains available so source-grounded arguments can continue across rounds.
-
-## Other context modes
-
-Broad repository review:
+### README only
 
 ```bash
 arch-council review \
-  --repo ../semantic_text2sql_ideal \
-  --rounds 3 \
-  --question "What is the strongest production architecture for this project?"
+  --repo /path/to/repo \
+  --readme-only \
+  --question "What architecture should we use?"
 ```
 
-Git-diff review:
+### Broader repository context
 
 ```bash
 arch-council review \
-  --repo ../semantic_text2sql_ideal \
+  --repo /path/to/repo \
+  --question "Review the implementation architecture."
+```
+
+### Git diff
+
+```bash
+arch-council review \
+  --repo /path/to/repo \
   --diff-base main \
-  --rounds 3 \
-  --question "Is this change architecturally safe for production?"
+  --question "Is this change architecturally safe?"
 ```
 
 `--readme-only` and `--diff-base` are mutually exclusive.
 
+## Interactive architecture agent
+
+The separate `chat` mode is a bounded tool-using agent. With research enabled it decides whether to answer directly or use search, observes the result, and may decide again.
+
+```bash
+arch-council chat \
+  --repo "/Users/meisam/Documents/text-to-sql/semantic_text2sql_ideal" \
+  --readme-only \
+  --research \
+  --research-provider searxng \
+  --max-tool-steps 2
+```
+
+Default agent budget:
+
+```text
+up to 2 search actions
+up to 3 LLM calls per question
+```
+
+Blank input is ignored; `exit`, `quit`, or Ctrl-D leaves the session.
+
+## Reliability
+
+The JustWoker client retries transient gateway/network failures. Retryable HTTP status codes include:
+
+```text
+429, 500, 502, 503, 504, 524
+```
+
+Retries and run-level persistence solve different problems. **Persistent checkpoint/resume is not implemented yet**; a repeatedly failing call can still terminate a review after client retries are exhausted.
+
 ## Output
 
-Each council run writes a Markdown report under `reports/` containing the three blind proposals, external research queries and source evidence when enabled, every three-way debate round, three final revisions, and the final ADR.
+Review reports are written under `reports/` and contain:
 
-The ADR contains:
-
-```text
-Executive Decision
-Recommended Architecture
-Why
-Decision Matrix
-Agent / Workflow Recovery
-External Evidence
-AGREE
-DISAGREE
-MINORITY REPORT
-NEEDS EXPERIMENT
-Risks
-Migration Plan
-Do Not Change
-Revisit Triggers
-```
-
-## Gateway and research defaults
-
-```text
-LLM base URL:       https://api.justwoker.icu
-LLM endpoint:       /v1/messages
-A model:            gpt-5.6-sol
-B model:            gpt-5.6-terra
-C model:            gpt-5.6-luna
-Research provider:  searxng
-SearXNG URL:        http://localhost:8080
-Tavily:             optional
-```
-
-A true direct Anthropic Claude council participant would require a second provider client and separate Anthropic credential.
+- independent blind proposals;
+- research queries and evidence;
+- evidence-coverage requests;
+- every completed debate round;
+- final revised candidates;
+- deterministic weighted totals and selected candidate;
+- final ADR with minority positions and experiments.
 
 ## Development
 
 ```bash
 pip install -e '.[dev]'
-pytest
 ruff check .
+pytest -q
 ```
 
-## Security and cost controls
+## Security and boundedness
 
-- API keys are environment variables only and `.env` is ignored.
-- Local SearXNG binds to loopback (`127.0.0.1`) by default.
+- API keys come from environment variables; `.env` is ignored.
+- Local SearXNG binds to loopback by default.
 - Repository context is bounded by `--max-context-chars`.
-- Search result excerpts and source count are bounded.
-- External search evidence is explicitly treated as untrusted.
-- Agent search steps are capped; there is no infinite autonomous loop.
-- Debate rounds are capped at five.
-- The tool never executes code from the reviewed repository.
-- Prefer `--readme-only` for architecture-only discussion and `--diff-base main` for PR-style review.
+- Search results and evidence inspection are bounded.
+- Arbitrary web pages are not deep-fetched by the evidence inspector.
+- External source text is treated as untrusted evidence.
+- Debate rounds are capped at three.
+- The reviewed repository is never executed by ArchCouncil.
+- Final arithmetic and stopping rules are deterministic.
+
+## Current limitations
+
+- GitHub inspection currently reads the root README rather than recursively inspecting repository source code.
+- arXiv inspection currently uses metadata and abstract rather than full-PDF analysis.
+- Evidence-quality dimensions are heuristics, not empirical truth.
+- The arbiter is a fresh role, but defaults to the same underlying model as Architect A unless `--arbiter-model` is supplied.
+- Persistent checkpoint/resume is still a future reliability improvement.
 
 ## License
 
