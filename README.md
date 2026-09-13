@@ -1,5 +1,9 @@
 # ArchCouncil
 
+<p align="center">
+  <img src="docs/agent_debate_workflow.jpg" alt="Agent_Debate workflow with Sol, Terra, and Luna debating architecture" width="100%">
+</p>
+
 **ArchCouncil 0.6** is a bounded, evidence-grounded architecture review tool for software repositories.
 
 It deliberately separates three responsibilities:
@@ -274,7 +278,7 @@ maximum LLM calls = 12 + (3 × max_rounds)
 The four research-mode LLM calls are one research-planner call plus three independent evidence-coverage checks. Search requests and source inspection HTTP requests are not LLM calls.
 
 | Max rounds | No research max | Research max |
-| ---: | ---: | ---: |
+| ---: | ---: |
 | 1 | 11 | 15 |
 | 2 | 14 | 18 |
 | 3 | 17 | 21 |
