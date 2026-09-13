@@ -1,7 +1,7 @@
 # ArchCouncil
 
 <p align="center">
-  <img src="docs/agent" alt="Agent_Debate workflow with Sol, Terra, and Luna debating architecture" width="100%">
+  <img src="docs/Agent" alt="Agent_Debate workflow with Sol, Terra, and Luna debating architecture" width="100%">
 </p>
 
 **ArchCouncil 0.6** is a bounded, evidence-grounded architecture review tool for software repositories.
